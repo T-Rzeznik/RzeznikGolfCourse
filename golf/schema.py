@@ -55,6 +55,10 @@ ROUND_COLUMNS = ["round_id", "date", "players", "notes"]
 # Only one club is legal on the course, so there's no club vocabulary.
 CLUB = "sand wedge"
 
-# The six shot outcomes, roughly worst -> best, with `ob` as the bust. The order
+# The shot outcomes, roughly worst -> best, with `ob` as the bust. The order
 # here doubles as a quality ranking for auto-suggesting the best ball.
-OUTCOMES = ["ob", "overshoot", "grounder", "short_pop", "good", "hole"]
+# `skip` is special: a player who sat out a stroke (not a real attempt). Like
+# `ob` it can never be the best ball, and a stroke where *every* ball is OB or
+# skipped advances with no best ball (re-hit the same spot). It's excluded from
+# the shot-outcome model (see features.shot_outcome).
+OUTCOMES = ["skip", "ob", "overshoot", "grounder", "short_pop", "good", "hole"]

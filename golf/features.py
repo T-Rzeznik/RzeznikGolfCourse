@@ -92,9 +92,12 @@ def shot_outcome() -> pd.DataFrame:
 
     With one club and no distance/lie tracking, this is purely categorical
     (player, hole, where in the hole, shot order, team size), so expect modest
-    signal. Mulligan do-overs are excluded so we model real attempts.
+    signal. Mulligan do-overs and skipped turns are excluded so we model real
+    attempts.
     """
     shots = gdata.counting_shots(gdata.load_shots())
+    if not shots.empty:
+        shots = shots[shots["outcome"] != "skip"]
     if shots.empty:
         return shots
     pars = gdata.holes_frame()[["hole", "par"]]

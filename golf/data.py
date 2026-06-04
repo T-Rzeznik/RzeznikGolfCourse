@@ -207,9 +207,11 @@ def validate() -> list[str]:
                 problems.append(f"Round {rid} hole {hole} stroke {sn}: player {pid} has {int(c)} counting shots")
 
             best = sgrp[sgrp["best_ball"].fillna(False)]
-            all_ob = (sgrp["outcome"] == "ob").all()
-            if (best["outcome"] == "ob").any():
-                problems.append(f"Round {rid} hole {hole} stroke {sn}: best ball can't be an OB shot")
+            # A ball that's OB or skipped can never be kept, so if every ball is
+            # OB/skipped no progress is made and the team re-hits (no best ball).
+            no_advance = sgrp["outcome"].isin(["ob", "skip"]).all()
+            if best["outcome"].isin(["ob", "skip"]).any():
+                problems.append(f"Round {rid} hole {hole} stroke {sn}: best ball can't be an OB or skipped shot")
             if sn == max_s:
                 # Final stroke: best_ball is exactly the holing ball(s).
                 holing = set(sgrp[sgrp["outcome"] == "hole"]["shot_id"])
@@ -219,9 +221,9 @@ def validate() -> list[str]:
                         f"Round {rid} hole {hole} final stroke: best_ball should mark the "
                         f"holing ball(s) {sorted(holing)}, got {sorted(marked)}"
                     )
-            elif all_ob:
+            elif no_advance:
                 if len(best):
-                    problems.append(f"Round {rid} hole {hole} stroke {sn}: all-OB stroke should have no best ball")
+                    problems.append(f"Round {rid} hole {hole} stroke {sn}: no-advance stroke (all OB/skipped) should have no best ball")
             elif len(best) != 1:
                 problems.append(f"Round {rid} hole {hole} stroke {sn}: {len(best)} best balls (expected 1)")
     return problems
