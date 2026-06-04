@@ -36,9 +36,15 @@ course** — the code doesn't care whose holes they are.
 | 5 | 3 | Where hole 4 ends | Back-right corner, 10 ft off the small pine | Safety routing |
 | 6 | 4 | Where hole 5 ends | Front tree on the Murray side (hole is left of it) | Curves around house |
 
-Full definitions live in [`data/course.yaml`](data/course.yaml). Hole maps go in
-[`maps/`](maps/README.md). **Making your own course?** Just rewrite `course.yaml`
-and the matching `COURSE` block at the top of `webapp/index.html`.
+Full definitions live in [`data/course.yaml`](data/course.yaml). **Making your own
+course?** Just rewrite `course.yaml` and the matching `COURSE` block at the top of
+`webapp/index.html`.
+
+<p align="center">
+  <img src="maps/hole_1.png" alt="Top-down map of hole 1: tee off behind the pear tree at the top and finish behind the side pine near the house" width="540">
+  <br>
+  <em>Hole 1 (par 3) — tee off behind the pear tree (⛳ Start) and finish behind the side pine by the house (🚩 Goal). More hole maps are landing in <a href="maps/README.md"><code>maps/</code></a>.</em>
+</p>
 
 ---
 
@@ -188,7 +194,7 @@ issue or fork it.
 - [x] Phone web app for logging rounds (hole/par/stroke display, skip, undo, mulligan)
 - [x] Data schema, validation, and derived scorecards
 - [x] Feature tables for all four ML goals
-- [ ] Add hole map images to `maps/`
+- [ ] Add hole map images to `maps/` (hole 1 done — 5 to go)
 - [ ] Measure and fill in `yards` for each hole in `course.yaml`
 - [ ] Log enough real rounds to train baseline models
 - [ ] Baseline models + write-ups in `notebooks/`
