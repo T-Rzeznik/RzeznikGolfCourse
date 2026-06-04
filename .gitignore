@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Trained models (regenerate from data)
+models/*.pkl
+models/*.joblib
+
+# Synthetic/sample data
+data/sample/
+
+# OS
+.DS_Store
+Thumbs.db

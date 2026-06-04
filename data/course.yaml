@@ -1,0 +1,78 @@
+course:
+  name: Rzeznik Golf Course
+  location: Backyard / property
+  holes_count: 6
+  par_total: 20
+  target_score: 20      # best-ball team total to "win" (default = par total)
+
+# Rules baked into the data:
+#   * Sand wedge is the only legal club.
+#   * Played as best ball, 1-3 players on one team; "win" = team total < target.
+#   * One mulligan (free do-over) per round for the group.
+#   * Out-of-bounds = stroke-and-distance retake (no drop) for safety.
+#   * Pars are intentionally generous (e.g. par 3 where a perfect line is 2) so
+#     players lay up instead of firing risky shots into the neighbors' yards.
+#
+# Static definition of every hole. Edit pars/yards as you measure them.
+# `map` points to an image in maps/ (see maps/README.md for the convention).
+# `dogleg`, `blind`, and `notes` feed both the maps and the ML features.
+holes:
+  - hole: 1
+    par: 3
+    yards: null            # fill in once measured
+    start: Behind the pear tree
+    target: Behind the side pine
+    dogleg: false
+    blind: false           # line of sight to the hole?
+    notes: ""
+    map: maps/hole_1.png
+
+  - hole: 2
+    par: 3
+    yards: null
+    start: Where hole 1 ends (behind the side pine)
+    target: Behind the brush well
+    dogleg: false
+    blind: true
+    notes: "No line of sight to the hole."
+    map: maps/hole_2.png
+
+  - hole: 3
+    par: 3
+    yards: null
+    start: Back-left tree, close to the pine tree
+    target: Behind the pear tree corner
+    dogleg: false
+    blind: true
+    notes: "No line of sight to the hole."
+    map: maps/hole_3.png
+
+  - hole: 4
+    par: 4
+    yards: null
+    start: Corner at the top of the lawn by the sidewalk
+    target: Between the back-left tree and the tree closest to the porch
+    dogleg: true
+    blind: false
+    notes: "Hooks around the house into the backyard. First shot is LEFTY ONLY."
+    map: maps/hole_4.png
+
+  - hole: 5
+    par: 3
+    yards: null
+    start: Where hole 4 ends
+    target: Back-right corner of the yard, 10 ft off the last small pine tree
+    dogleg: false
+    blind: false
+    notes: "Routed here for safety reasons."
+    map: maps/hole_5.png
+
+  - hole: 6
+    par: 4
+    yards: null
+    start: Where hole 5 ends
+    target: Front tree on the Murray side, hole is to the LEFT of the tree
+    dogleg: true
+    blind: false
+    notes: "Curves around the house in the backyard."
+    map: maps/hole_6.png

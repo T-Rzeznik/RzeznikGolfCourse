@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#1b5e20">
+<title>Rzeznik Golf Tracker</title>
+<style>
+  :root { --green:#1b5e20; --green2:#2e7d32; --bg:#0f1410; --card:#1b211b; --line:#33402f; --txt:#e8f0e2; --muted:#9bb08c; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; font-family:-apple-system,system-ui,sans-serif; background:var(--bg); color:var(--txt);
+         font-size:17px; padding-bottom:90px; }
+  header { background:var(--green); padding:12px 14px; position:sticky; top:0; z-index:10; }
+  header .row { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  header h1 { font-size:17px; margin:0; }
+  header .score { font-size:14px; color:#cfe8c4; }
+  .wrap { padding:14px; max-width:560px; margin:0 auto; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; margin-bottom:14px; }
+  h2 { font-size:15px; margin:0 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.5px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:10px 0 4px; }
+  input, textarea { width:100%; padding:12px; border-radius:10px; border:1px solid var(--line);
+          background:#0c100b; color:var(--txt); font-size:16px; }
+  .btn { display:inline-block; padding:14px 16px; border-radius:12px; border:1px solid var(--line);
+         background:#222a20; color:var(--txt); font-size:16px; font-weight:600; cursor:pointer; }
+  .btn:active { transform:scale(.97); }
+  .btn.primary { background:var(--green2); border-color:var(--green2); }
+  .btn.wide { display:block; width:100%; text-align:center; margin-top:10px; }
+  .btn.sm { padding:9px 12px; font-size:14px; }
+  .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
+  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
+  .chip { padding:12px 8px; border-radius:12px; border:1px solid var(--line); background:#222a20;
+          text-align:center; font-weight:600; cursor:pointer; }
+  .chip.on { background:var(--green2); border-color:#7bd389; }
+  .tabs { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+  .tab { padding:9px 14px; border-radius:999px; border:1px solid var(--line); background:#222a20; cursor:pointer; }
+  .tab.on { background:var(--green); border-color:var(--green); }
+  .shotlist { margin:6px 0; }
+  .shot { display:flex; justify-content:space-between; padding:8px 10px; border-bottom:1px solid var(--line); font-size:15px; }
+  .shot .mull { color:#e0a; }
+  .muted { color:var(--muted); font-size:14px; }
+  .holeinfo { font-size:14px; color:#cfe8c4; margin-bottom:8px; line-height:1.4; }
+  .note { font-size:13px; color:#e8c98c; }
+  .bottom { position:fixed; bottom:0; left:0; right:0; background:#0c100b; border-top:1px solid var(--line);
+            padding:10px 14px; display:flex; gap:10px; }
+  .bottom .btn { flex:1; text-align:center; }
+  textarea#payload { height:150px; font-family:monospace; font-size:12px; }
+  .hidden { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="row">
+    <h1>⛳ Rzeznik Golf Tracker</h1>
+    <div class="score" id="hdrScore"></div>
+  </div>
+</header>
+<div class="wrap" id="app"></div>
+
+<script>
+// ---- Course (kept in sync with data/course.yaml) -------------------------
+const COURSE = {
+  name: "Rzeznik Golf Course",
+  target: 20,
+  holes: [
+    {hole:1, par:3, start:"Behind the pear tree", target:"Behind the side pine", notes:""},
+    {hole:2, par:3, start:"Where hole 1 ends", target:"Behind the brush well", notes:"No line of sight."},
+    {hole:3, par:3, start:"Back-left tree, by the pine", target:"Behind the pear tree corner", notes:"No line of sight."},
+    {hole:4, par:4, start:"Top of the lawn by the sidewalk", target:"Between back-left tree & porch tree", notes:"Hooks around house. First shot LEFTY ONLY."},
+    {hole:5, par:3, start:"Where hole 4 ends", target:"Back-right corner, 10 ft off small pine", notes:"Safety routing."},
+    {hole:6, par:4, start:"Where hole 5 ends", target:"Front tree, Murray side (hole left of it)", notes:"Curves around house."},
+  ]
+};
+const ROSTER = [{player_id:1, name:"Tommy"}];   // matches data/players.csv
+const LIES = ["tee","fairway","rough","green","sand","woods","hazard"];
+const RESULTS = ["green","fairway","rough","sand","woods","hazard","ob","holed"];
+const EMAIL = "trzeznik29@gmail.com";
+const KEY = "rzeznik_round_v1";
+
+// ---- State ---------------------------------------------------------------
+let S = load() || newRound();
+function newRound() {
+  const today = new Date().toISOString().slice(0,10);
+  return { date:today, notes:"", roster:JSON.parse(JSON.stringify(ROSTER)),
+           active:[1], shots:[], hole:1, curPlayer:1, mulliganUsed:false,
+           pendDist:"", pendMull:false };
+}
+function save() { localStorage.setItem(KEY, JSON.stringify(S)); }
+function load() { try { return JSON.parse(localStorage.getItem(KEY)); } catch(e){ return null; } }
+
+// ---- Scoring helpers -----------------------------------------------------
+const counting = s => S.shots.filter(x => !x.mulligan && x.player_id===s.player_id);
+function strokes(pid, hole) {
+  return S.shots.filter(x => x.player_id===pid && x.hole===hole && !x.mulligan).length;
+}
+function playerTotal(pid) {
+  return S.shots.filter(x => x.player_id===pid && !x.mulligan).length;
+}
+function teamTotal() {
+  let t = 0;
+  for (const h of COURSE.holes) {
+    const perPlayer = S.active.map(pid => strokes(pid, h.hole)).filter(n => n>0);
+    if (perPlayer.length) t += Math.min(...perPlayer);
+  }
+  return t;
+}
+function defaultLie(pid, hole) {
+  const hs = S.shots.filter(x => x.player_id===pid && x.hole===hole);
+  if (!hs.length) return "tee";
+  const last = hs[hs.length-1];
+  if (last.result==="ob") return last.lie;        // OB = replay same spot
+  if (LIES.includes(last.result)) return last.result;
+  return "fairway";
+}
+
+// ---- Render --------------------------------------------------------------
+const app = document.getElementById("app");
+function render() {
+  save();
+  document.getElementById("hdrScore").textContent =
+    S.shots.length ? `Team ${teamTotal()} / target ${COURSE.target}` : "";
+  if (!S.started) return renderSetup();
+  if (S.finished) return renderFinish();
+  renderPlay();
+}
+
+function renderSetup() {
+  app.innerHTML = `
+    <div class="card">
+      <h2>New round</h2>
+      <label>Date</label>
+      <input type="date" id="d" value="${S.date}">
+      <label>Players</label>
+      <div class="grid" id="players"></div>
+      <input id="newp" placeholder="add a player by name" style="margin-top:10px">
+      <button class="btn sm wide" onclick="addPlayer()">+ Add player</button>
+      <label>Round notes (optional)</label>
+      <textarea id="notes" rows="2">${S.notes||""}</textarea>
+      <button class="btn primary wide" onclick="startRound()">Start round →</button>
+    </div>`;
+  const pc = document.getElementById("players");
+  pc.innerHTML = S.roster.map(p =>
+    `<div class="chip ${S.active.includes(p.player_id)?'on':''}" onclick="togglePlayer(${p.player_id})">${p.name}</div>`
+  ).join("");
+}
+function togglePlayer(id){ S.active = S.active.includes(id) ? S.active.filter(x=>x!==id) : [...S.active,id]; render(); }
+function addPlayer(){
+  const v = document.getElementById("newp").value.trim();
+  if(!v) return;
+  const id = Math.max(0,...S.roster.map(p=>p.player_id))+1;
+  S.roster.push({player_id:id, name:v}); S.active.push(id); render();
+}
+function startRound(){
+  S.date = document.getElementById("d").value;
+  S.notes = document.getElementById("notes").value;
+  if(!S.active.length){ alert("Pick at least one player."); return; }
+  S.curPlayer = S.active[0]; S.started = true; render();
+}
+
+function renderPlay() {
+  const h = COURSE.holes.find(x => x.hole===S.hole);
+  const pid = S.curPlayer;
+  const lie = defaultLie(pid, S.hole);
+  app.innerHTML = `
+    <div class="card">
+      <h2>Hole ${h.hole} · Par ${h.par}</h2>
+      <div class="holeinfo">${h.start} → ${h.target}
+        ${h.notes?`<br><span class="note">⚠ ${h.notes}</span>`:""}</div>
+      <div class="tabs" id="ptabs"></div>
+      <div class="shotlist" id="shots"></div>
+      <div class="muted">Lie (tap a result to log a shot from here):</div>
+      <div class="grid3" id="lies" style="margin:6px 0 12px"></div>
+      <label>Distance (yds, optional)</label>
+      <input id="dist" type="number" inputmode="decimal" value="${S.pendDist}" placeholder="—">
+      <div class="muted" style="margin-top:12px">Result of the shot:</div>
+      <div class="grid3" id="results" style="margin:6px 0"></div>
+      <div class="grid" style="margin-top:6px">
+        <button class="btn sm ${S.pendMull?'primary':''}" onclick="toggleMull()"
+          ${S.mulliganUsed&&!S.pendMull?'disabled style=opacity:.4':''}>
+          ${S.pendMull?'✓ Mulligan armed':'Mulligan (free do-over)'}</button>
+        <button class="btn sm" onclick="undoShot()">↶ Undo last shot</button>
+      </div>
+    </div>`;
+
+  document.getElementById("ptabs").innerHTML = S.active.map(id => {
+    const nm = S.roster.find(p=>p.player_id===id).name;
+    const st = strokes(id, S.hole);
+    return `<div class="tab ${id===pid?'on':''}" onclick="setPlayer(${id})">${nm} · ${st}</div>`;
+  }).join("");
+
+  const mine = S.shots.filter(x=>x.player_id===pid && x.hole===S.hole);
+  document.getElementById("shots").innerHTML = mine.length
+    ? mine.map((x,i)=>`<div class="shot"><span>${x.mulligan?'<span class="mull">mull</span> ':''}#${i+1} ${x.lie} → <b>${x.result}</b>${x.distance_yds!==null?` · ${x.distance_yds}y`:''}</span></div>`).join("")
+    : `<div class="muted">No shots yet — pick a result below.</div>`;
+
+  document.getElementById("lies").innerHTML = LIES.map(l =>
+    `<div class="chip ${l===(S.pendLie||lie)?'on':''}" onclick="setLie('${l}')">${l}</div>`).join("");
+  document.getElementById("results").innerHTML = RESULTS.map(r =>
+    `<div class="chip" onclick="logShot('${r}')">${r}</div>`).join("");
+}
+function setPlayer(id){ S.curPlayer=id; S.pendLie=null; render(); }
+function setLie(l){ S.pendLie=l; render(); }
+function toggleMull(){ if(S.mulliganUsed&&!S.pendMull) return; S.pendMull=!S.pendMull; render(); }
+
+function logShot(result){
+  const pid = S.curPlayer;
+  const lie = S.pendLie || defaultLie(pid, S.hole);
+  const distEl = document.getElementById("dist");
+  const dist = distEl && distEl.value!=="" ? parseFloat(distEl.value) : null;
+  const isMull = S.pendMull;
+  const shotNum = S.shots.filter(x=>x.player_id===pid && x.hole===S.hole).length + 1;
+  S.shots.push({ player_id:pid, hole:S.hole, shot_num:shotNum,
+                 distance_yds:dist, lie:lie, result:result,
+                 holed: result==="holed" && !isMull, mulligan:isMull });
+  if(isMull) S.mulliganUsed = true;
+  S.pendLie=null; S.pendDist=""; S.pendMull=false;
+  render();
+}
+function undoShot(){
+  const pid=S.curPlayer;
+  for(let i=S.shots.length-1;i>=0;i--){
+    if(S.shots[i].player_id===pid && S.shots[i].hole===S.hole){
+      if(S.shots[i].mulligan) S.mulliganUsed=false;
+      S.shots.splice(i,1); break;
+    }
+  }
+  render();
+}
+
+function nav(d){
+  const n = S.hole + d;
+  if(n<1){ S.started=false; render(); return; }       // back to setup from hole 1
+  if(n>COURSE.holes.length){ S.finished=true; render(); return; }
+  S.hole=n; S.pendLie=null; render();
+}
+
+function renderFinish(){
+  const payload = JSON.stringify(exportData(), null, 0);
+  const rows = S.active.map(pid=>{
+    const nm=S.roster.find(p=>p.player_id===pid).name;
+    return `${nm}: ${playerTotal(pid)} strokes`;
+  }).join(" · ");
+  app.innerHTML = `
+    <div class="card">
+      <h2>Round complete</h2>
+      <div class="holeinfo">Team best ball: <b>${teamTotal()}</b> vs target ${COURSE.target}
+        — ${teamTotal()<COURSE.target?'🏆 WIN':'no win'}.<br>${rows}</div>
+      <button class="btn primary wide" onclick="emailIt('${encodeURIComponent(payload)}')">📧 Email this round to me</button>
+      <button class="btn wide" onclick="shareIt()">📤 Share / save round</button>
+      <button class="btn wide" onclick="copyIt()">📋 Copy round data</button>
+      <label>Round data (paste into scripts/import_log.py)</label>
+      <textarea id="payload" readonly>${payload}</textarea>
+      <button class="btn sm wide" onclick="if(confirm('Clear this round and start fresh?')){localStorage.removeItem(KEY);S=newRound();render();}">🗑 Clear & new round</button>
+    </div>`;
+}
+function exportData(){
+  return { course:COURSE.name, date:S.date, notes:S.notes,
+           players:S.active.map(id=>S.roster.find(p=>p.player_id===id)),
+           shots:S.shots };
+}
+function payloadStr(){ return JSON.stringify(exportData()); }
+function emailIt(){
+  const body = encodeURIComponent("Round data (JSON):\n\n"+payloadStr());
+  location.href = `mailto:${EMAIL}?subject=${encodeURIComponent('Golf round '+S.date)}&body=${body}`;
+}
+async function shareIt(){
+  const text = payloadStr();
+  if(navigator.share){ try{ await navigator.share({title:"Golf round "+S.date, text}); }catch(e){} }
+  else copyIt();
+}
+function copyIt(){
+  const t=document.getElementById("payload"); const txt = t?t.value:payloadStr();
+  navigator.clipboard?.writeText(txt).then(()=>alert("Copied!"), ()=>{ if(t){t.select();document.execCommand('copy');} });
+}
+
+// ---- Bottom nav ----------------------------------------------------------
+function renderBottom(){
+  let b = document.querySelector(".bottom");
+  if(!b){ b=document.createElement("div"); b.className="bottom"; document.body.appendChild(b); }
+  if(!S.started || S.finished){ b.classList.add("hidden"); return; }
+  b.classList.remove("hidden");
+  b.innerHTML = `
+    <button class="btn" onclick="nav(-1)">← ${S.hole===1?'Setup':'Hole '+(S.hole-1)}</button>
+    <button class="btn primary" onclick="nav(1)">${S.hole===COURSE.holes.length?'Finish ✓':'Hole '+(S.hole+1)+' →'}</button>`;
+}
+const _render = render;
+render = function(){ _render(); renderBottom(); };
+render();
+</script>
+</body>
+</html>
