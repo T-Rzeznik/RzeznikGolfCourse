@@ -1,8 +1,29 @@
-# Rzeznik Golf Course — stat tracker + ML
+# ⛳ Rzeznik Golf Course
 
-A homemade 6-hole backyard golf course, played as a **best-ball scramble**. This
-repo tracks every round we play and uses the data to build ML models that predict
-team scores, win probability, hole difficulty, and shot outcomes.
+**A homemade 6-hole backyard golf course — and a little experiment in turning a
+silly game into a data project.**
+
+We built a par-20 golf course in a backyard, made up some house rules, and play it
+as a *best-ball scramble*. This repo is everything around that: a phone-friendly
+app for logging rounds on the course, a clean data pipeline, and a set of machine
+learning models that try to predict how a round will go.
+
+It's a personal project, but it's all here in the open. If you've got a backyard, a
+driveway, or a park and a sand wedge, you can **fork this and track your own
+course** — the code doesn't care whose holes they are.
+
+---
+
+## What's in here
+
+| | |
+|---|---|
+| 📱 **A tap-to-log web app** | One HTML file. Open it on your phone, play a round, tap what each shot did. No app store, works offline. |
+| 📊 **A clean data pipeline** | Every shot is one row in a CSV. Team scores are *derived*, never hand-entered, so the numbers can't drift. |
+| 🤖 **Four ML models** | Predict team score, win probability, hole difficulty, and individual shot outcomes. |
+| 🗺️ **A real course** | Six holes with start/target landmarks, generous pars, and safety routing so balls stay out of the neighbors' yards. |
+
+---
 
 ## The course (par 20)
 
@@ -16,116 +37,164 @@ team scores, win probability, hole difficulty, and shot outcomes.
 | 6 | 4 | Where hole 5 ends | Front tree on the Murray side (hole is left of it) | Curves around house |
 
 Full definitions live in [`data/course.yaml`](data/course.yaml). Hole maps go in
-[`maps/`](maps/README.md).
+[`maps/`](maps/README.md). **Making your own course?** Just rewrite `course.yaml`
+and the matching `COURSE` block at the top of `webapp/index.html`.
 
-## House rules (best-ball scramble)
+---
 
-- **One club:** the sand wedge is the only legal club, so we don't track club choice.
-- **Scramble, 1–3 players** on one team. Everyone hits from the **same spot** each
-  stroke; you keep the **best ball** and all play the next stroke from there. The
-  player who hit the kept ball goes first; a **random player starts each hole**.
-- **Six outcomes per shot:** grounder, short pop, good, **hole**, overshoot, out of
-  bounds. A `hole` ends the hole immediately. The **team score** for a hole is the
-  number of strokes taken; **you "win" when the team total beats the target** (par
-  total, 20) — set `target_score` in `course.yaml`.
-- **One mulligan per round** for the group — a free do-over of a single player's
-  shot. The discarded shot doesn't count.
-- **Out of bounds:** an OB ball can't be kept. If **everyone** goes OB the team
-  re-hits the same spot (it still costs a stroke). A safety rule to keep balls out
-  of the neighbors' yards.
-- **Pars are intentionally generous** (a par 3 where the perfect line is really a
-  2) for the same reason — so players lay up instead of firing risky shots.
+## How we play (the house rules)
+
+It's a **best-ball scramble** for 1–3 players on one team:
+
+- 🏌️ **One club only.** The sand wedge is the only legal club — so we don't bother
+  tracking club choice.
+- 🔁 **Everyone hits from the same spot** each stroke. The team keeps the **best
+  ball**, and all players hit the next stroke from there. The person who hit the
+  kept ball goes first; a **random player starts each hole**.
+- 🎯 **What a shot can do:** *grounder, short pop, good, **hole**, overshoot,* or
+  *out of bounds*. A `hole` ends the hole right away. Your **team score** for a
+  hole is just the number of strokes it took.
+- 🏆 **You win** when the team total beats the **target** (the par total, 20). Set
+  `target_score` in `course.yaml` to change it.
+- 🪃 **One mulligan per round** for the whole group — a free do-over of a single
+  shot. The scrapped shot doesn't count.
+- 🚫 **Out of bounds can't be kept.** If *everyone* goes OB, the team re-hits the
+  same spot (it still costs a stroke). It's a safety rule to keep balls off the
+  neighbors' lawns.
+- ⏭️ **Skip a turn.** Someone has to sit out a stroke? Tap **skip** — it's not a
+  real attempt, can't be the best ball, and (in a group) doesn't cost the team an
+  extra stroke.
+- 🤏 **Pars are intentionally generous** (a par 3 where the perfect line is really
+  a 2). That nudges players to lay up instead of firing risky shots over fences.
+
+---
+
+## Logging a round on your phone
+
+Day-to-day, you capture rounds with the tap-based web app in
+[`webapp/index.html`](webapp/index.html) — a single file, no install:
+
+1. **Get it on your phone once.** Either enable **GitHub Pages** on your fork and
+   open `…/webapp/`, or just email `webapp/index.html` to yourself and open it in
+   your phone's browser. Then **Add to Home Screen** — it runs offline after that.
+2. **Pick who's playing.** You're added by default; tap the **✕** next to anyone
+   sitting this one out, or **＋ Add** a friend by name.
+3. **Play.** A big banner always shows the **hole, its par, and which stroke
+   you're on**. The app names whose turn it is — tap one outcome button and it
+   advances to the next player. After everyone hits, it asks **who had the best
+   ball**. Mulligan, Skip, and Undo are all one tap away. Everything is saved in
+   the browser, so a locked screen won't lose your round.
+4. **Finish → send it to yourself** (email / share / copy the round data).
+
+Back at a computer, import what you sent:
+
+```bash
+python scripts/import_log.py round.json     # a saved/emailed file
+python scripts/import_log.py                 # …or paste the JSON, then Ctrl-Z + Enter (Windows)
+```
+
+It assigns IDs, creates any new players, appends to the CSVs, and validates the
+round against the scramble rules.
+
+> Prefer a keyboard? `python scripts/log_round.py` is an interactive terminal
+> logger that does the same thing.
+
+---
+
+## Getting set up (for the data + ML side)
+
+```bash
+git clone https://github.com/T-Rzeznik/RzeznikGolfCourse.git
+cd RzeznikGolfCourse
+
+python -m venv .venv
+.venv\Scripts\activate          # Windows PowerShell
+# source .venv/bin/activate     # macOS / Linux
+pip install -r requirements.txt
+```
+
+**No real rounds yet?** Generate synthetic data to try the whole pipeline:
+
+```bash
+python scripts/generate_sample_data.py      # writes fake data to data/sample/
+jupyter notebook notebooks/01_explore.ipynb
+```
+
+---
 
 ## How the data is structured
 
-The **per-shot table** (`data/shots.csv`) is the single source of truth — one row
-per player per stroke. Team scores are *derived* in code (team strokes for a hole =
-the number of strokes taken), so they can never drift out of sync.
+The **per-shot table** ([`data/shots.csv`](data/shots.csv)) is the single source of
+truth — one row per player per stroke. Everything else (team scores, win/loss) is
+*computed* from it in code, so the numbers can never disagree with each other.
 
 ```
 data/
   course.yaml   # the 6 holes: par, start/target, dogleg, blind, map
   players.csv   # roster
   rounds.csv    # one row per game (date, who played)
-  shots.csv     # one row per player per stroke  <-- source of truth
+  shots.csv     # one row per player per stroke   ← source of truth
 ```
 
-Each shot records: `stroke_num` (team stroke index), `shot_order` (who hit first),
-`outcome` (one of six), `best_ball` (was this ball kept), and `mulligan` (a
-discarded do-over). The outcome vocabulary and the full scramble invariant are in
-[`golf/schema.py`](golf/schema.py).
+Each shot records `stroke_num` (the team's stroke index), `shot_order` (who hit
+first), `outcome`, `best_ball` (was this ball kept?), and `mulligan` (a scrapped
+do-over). The outcome vocabulary and the full "scramble invariant" that every
+scoring rule follows from live in [`golf/schema.py`](golf/schema.py).
 
-## Setup
+---
 
-```bash
-python -m venv .venv
-.venv\Scripts\activate          # Windows PowerShell
-pip install -r requirements.txt
-```
-
-## Logging a round (on your phone, on the course)
-
-Day-to-day capture is the tap-based web app in [`webapp/index.html`](webapp/index.html):
-
-1. **Get it on your phone once.** Easiest is GitHub Pages (after you push this
-   repo): enable Pages and open `…/webapp/`. No host yet? Email `webapp/index.html`
-   to yourself and open it in your phone browser. Then **Add to Home Screen** — it
-   runs offline from then on.
-2. **Play.** Pick the date + players; the app drives the rest. It names whose shot
-   it is, you tap one of the **six outcome buttons**, and it auto-advances to the
-   next player. After everyone hits it asks **who had the best ball**, then moves
-   on. A `hole` ends the hole; all-OB re-hits the same spot. One **Mulligan** and an
-   **Undo** are there too. Your round is saved in the browser, so a lock-screen
-   won't lose it.
-3. **Finish → send it to yourself** (email / share / copy).
-
-Back at the computer, import what you sent:
-
-```bash
-python scripts/import_log.py round.json      # a saved/emailed file
-python scripts/import_log.py                  # or paste the JSON, then Ctrl-Z + Enter
-```
-
-It assigns IDs, creates any new players, appends to the CSVs, and validates.
-
-> Prefer to log from a keyboard? `python scripts/log_round.py` is an interactive
-> terminal logger that does the same thing.
-
-## Trying the pipeline before you have real data
-
-```bash
-python scripts/generate_sample_data.py     # writes synthetic data to data/sample/
-```
-
-Then open the notebook:
-
-```bash
-jupyter notebook notebooks/01_explore.ipynb
-```
-
-## The Python package
+## The `golf` package & the ML models
 
 ```python
 from golf import data, features
 
-data.hole_scores()          # team strokes per (round, hole)
-data.round_scores()         # team total per round + won (beat target)
-data.player_contributions() # per (round, player): shots, best balls, outcome counts
-data.validate()             # list of data problems ([] = clean)
+# Derived scorecards (always consistent with shots.csv)
+data.hole_scores()           # team strokes per (round, hole)
+data.round_scores()          # team total per round + did we beat the target
+data.player_contributions()  # per player: shots, best balls, outcome counts
+data.validate()              # list of data problems ([] means clean)
 
-features.score_prediction() # X/y for predicting the team's strokes on a hole
-features.win_probability()  # X/y for predicting the team beats the target
-features.hole_difficulty()  # avg team strokes / score-to-par per hole
-features.shot_outcome()     # X/y for predicting a shot's outcome (one of six)
+# Leakage-free feature tables for the four modeling goals
+features.score_prediction()  # predict the team's strokes on a hole
+features.win_probability()   # predict the team beats the target
+features.hole_difficulty()   # which holes play hardest
+features.shot_outcome()      # predict an individual shot's outcome
 ```
 
-Modeling (train/test, metrics) lives in the notebooks so it's easy to iterate;
-the `golf` package just guarantees clean, leakage-free feature tables.
+The `golf` package only guarantees clean, leakage-free tables. The actual modeling
+(train/test splits, metrics, experiments) lives in `notebooks/` so it's easy to
+iterate without touching the data layer.
 
-## Roadmap
+---
 
+## Make it your own
+
+This is built around one specific backyard, but nothing in the code is hardcoded to
+it. To track your own course:
+
+1. Rewrite the holes in [`data/course.yaml`](data/course.yaml) and the `COURSE`
+   block in [`webapp/index.html`](webapp/index.html).
+2. Set your roster in [`data/players.csv`](data/players.csv).
+3. Adjust the house rules to taste — the outcome list and target score are the main
+   knobs.
+
+---
+
+## Status & roadmap
+
+This is an early, for-fun experiment — expect rough edges, and feel free to open an
+issue or fork it.
+
+- [x] Phone web app for logging rounds (hole/par/stroke display, skip, undo, mulligan)
+- [x] Data schema, validation, and derived scorecards
+- [x] Feature tables for all four ML goals
 - [ ] Add hole map images to `maps/`
 - [ ] Measure and fill in `yards` for each hole in `course.yaml`
-- [ ] Log real rounds
-- [ ] Baseline models in `notebooks/` once enough rounds are recorded
-- [ ] (Later) optional weather/conditions capture; web UI for entry
+- [ ] Log enough real rounds to train baseline models
+- [ ] Baseline models + write-ups in `notebooks/`
+- [ ] (Later) optional weather/conditions capture
+
+---
+
+*Built for fun in a backyard. If you end up playing your own version, that's the
+whole point.* 🏌️
