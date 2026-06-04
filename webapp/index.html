@@ -6,10 +6,10 @@
 <meta name="theme-color" content="#1b5e20">
 <title>Rzeznik Golf Tracker</title>
 <style>
-  :root { --green:#1b5e20; --green2:#2e7d32; --bg:#0f1410; --card:#1b211b; --line:#33402f; --txt:#e8f0e2; --muted:#9bb08c; }
+  :root { --green:#1b5e20; --green2:#2e7d32; --bg:#0f1410; --card:#1b211b; --line:#33402f; --txt:#e8f0e2; --muted:#9bb08c; --gold:#e8c98c; }
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   body { margin:0; font-family:-apple-system,system-ui,sans-serif; background:var(--bg); color:var(--txt);
-         font-size:17px; padding-bottom:90px; }
+         font-size:17px; padding-bottom:30px; }
   header { background:var(--green); padding:12px 14px; position:sticky; top:0; z-index:10; }
   header .row { display:flex; justify-content:space-between; align-items:center; gap:8px; }
   header h1 { font-size:17px; margin:0; }
@@ -27,24 +27,21 @@
   .btn.wide { display:block; width:100%; text-align:center; margin-top:10px; }
   .btn.sm { padding:9px 12px; font-size:14px; }
   .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; }
-  .grid3 { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; }
   .chip { padding:12px 8px; border-radius:12px; border:1px solid var(--line); background:#222a20;
           text-align:center; font-weight:600; cursor:pointer; }
   .chip.on { background:var(--green2); border-color:#7bd389; }
-  .tabs { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
-  .tab { padding:9px 14px; border-radius:999px; border:1px solid var(--line); background:#222a20; cursor:pointer; }
-  .tab.on { background:var(--green); border-color:var(--green); }
-  .shotlist { margin:6px 0; }
-  .shot { display:flex; justify-content:space-between; padding:8px 10px; border-bottom:1px solid var(--line); font-size:15px; }
-  .shot .mull { color:#e0a; }
+  .outcome { padding:20px 8px; font-size:18px; }
+  .outcome.hole { background:#3a2f10; border-color:var(--gold); color:var(--gold); }
+  .turn { font-size:22px; font-weight:700; margin:6px 0; }
+  .turn .stroke { color:var(--muted); font-size:15px; font-weight:600; }
+  .pill { display:inline-block; padding:3px 9px; border-radius:999px; background:#222a20;
+          border:1px solid var(--line); font-size:13px; margin:3px 4px 0 0; }
+  .pill.best { background:var(--green2); border-color:#7bd389; }
+  .pill.ob { opacity:.5; text-decoration:line-through; }
   .muted { color:var(--muted); font-size:14px; }
   .holeinfo { font-size:14px; color:#cfe8c4; margin-bottom:8px; line-height:1.4; }
-  .note { font-size:13px; color:#e8c98c; }
-  .bottom { position:fixed; bottom:0; left:0; right:0; background:#0c100b; border-top:1px solid var(--line);
-            padding:10px 14px; display:flex; gap:10px; }
-  .bottom .btn { flex:1; text-align:center; }
+  .note { font-size:13px; color:var(--gold); }
   textarea#payload { height:150px; font-family:monospace; font-size:12px; }
-  .hidden { display:none; }
 </style>
 </head>
 <body>
@@ -71,53 +68,48 @@ const COURSE = {
   ]
 };
 const ROSTER = [{player_id:1, name:"Tommy"}];   // matches data/players.csv
-const LIES = ["tee","fairway","rough","green","sand","woods","hazard"];
-const RESULTS = ["green","fairway","rough","sand","woods","hazard","ob","holed"];
+// outcomes shown on the buttons; `k` matches schema.OUTCOMES
+const OUTCOMES = [
+  {k:"good",      label:"Good shot"},
+  {k:"short_pop", label:"Short pop"},
+  {k:"grounder",  label:"Grounder"},
+  {k:"overshoot", label:"Overshoot"},
+  {k:"ob",        label:"Out of bounds"},
+  {k:"hole",      label:"HOLE 🏆"},
+];
+const LABEL = Object.fromEntries(OUTCOMES.map(o => [o.k, o.label]));
 const EMAIL = "trzeznik29@gmail.com";
-const KEY = "rzeznik_round_v1";
+const KEY = "rzeznik_round_v2";
+const HOLES = COURSE.holes.length;
 
 // ---- State ---------------------------------------------------------------
 let S = load() || newRound();
 function newRound() {
   const today = new Date().toISOString().slice(0,10);
-  return { date:today, notes:"", roster:JSON.parse(JSON.stringify(ROSTER)),
-           active:[1], shots:[], hole:1, curPlayer:1, mulliganUsed:false,
-           pendDist:"", pendMull:false };
+  return { date:today, notes:"", roster:JSON.parse(JSON.stringify(ROSTER)), active:[1],
+           shots:[], started:false, finished:false,
+           hole:1, strokeNum:1, order:[], turnIdx:0, phase:"shooting",
+           strokeOutcomes:{}, mulliganUsed:false, pendMull:false };
 }
 function save() { localStorage.setItem(KEY, JSON.stringify(S)); }
 function load() { try { return JSON.parse(localStorage.getItem(KEY)); } catch(e){ return null; } }
 
-// ---- Scoring helpers -----------------------------------------------------
-const counting = s => S.shots.filter(x => !x.mulligan && x.player_id===s.player_id);
-function strokes(pid, hole) {
-  return S.shots.filter(x => x.player_id===pid && x.hole===hole && !x.mulligan).length;
+// ---- Helpers -------------------------------------------------------------
+function shuffle(a){ a=a.slice(); for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]]; } return a; }
+function nm(pid){ const p=S.roster.find(x=>x.player_id===pid); return p?p.name:("P"+pid); }
+function realShots(){ return S.shots.filter(x=>!x.mulligan); }
+function holeStrokes(hole){
+  const ss=realShots().filter(x=>x.hole===hole).map(x=>x.stroke_num);
+  return ss.length ? Math.max(...ss) : 0;
 }
-function playerTotal(pid) {
-  return S.shots.filter(x => x.player_id===pid && !x.mulligan).length;
-}
-function teamTotal() {
-  let t = 0;
-  for (const h of COURSE.holes) {
-    const perPlayer = S.active.map(pid => strokes(pid, h.hole)).filter(n => n>0);
-    if (perPlayer.length) t += Math.min(...perPlayer);
-  }
-  return t;
-}
-function defaultLie(pid, hole) {
-  const hs = S.shots.filter(x => x.player_id===pid && x.hole===hole);
-  if (!hs.length) return "tee";
-  const last = hs[hs.length-1];
-  if (last.result==="ob") return last.lie;        // OB = replay same spot
-  if (LIES.includes(last.result)) return last.result;
-  return "fairway";
-}
+function teamTotal(){ let t=0; for(const h of COURSE.holes) t+=holeStrokes(h.hole); return t; }
 
 // ---- Render --------------------------------------------------------------
 const app = document.getElementById("app");
 function render() {
   save();
   document.getElementById("hdrScore").textContent =
-    S.shots.length ? `Team ${teamTotal()} / target ${COURSE.target}` : "";
+    S.started ? `Team ${teamTotal()} / target ${COURSE.target}` : "";
   if (!S.started) return renderSetup();
   if (S.finished) return renderFinish();
   renderPlay();
@@ -129,7 +121,7 @@ function renderSetup() {
       <h2>New round</h2>
       <label>Date</label>
       <input type="date" id="d" value="${S.date}">
-      <label>Players</label>
+      <label>Players (best ball scramble, 1–3)</label>
       <div class="grid" id="players"></div>
       <input id="newp" placeholder="add a player by name" style="margin-top:10px">
       <button class="btn sm wide" onclick="addPlayer()">+ Add player</button>
@@ -137,8 +129,7 @@ function renderSetup() {
       <textarea id="notes" rows="2">${S.notes||""}</textarea>
       <button class="btn primary wide" onclick="startRound()">Start round →</button>
     </div>`;
-  const pc = document.getElementById("players");
-  pc.innerHTML = S.roster.map(p =>
+  document.getElementById("players").innerHTML = S.roster.map(p =>
     `<div class="chip ${S.active.includes(p.player_id)?'on':''}" onclick="togglePlayer(${p.player_id})">${p.name}</div>`
   ).join("");
 }
@@ -153,101 +144,140 @@ function startRound(){
   S.date = document.getElementById("d").value;
   S.notes = document.getElementById("notes").value;
   if(!S.active.length){ alert("Pick at least one player."); return; }
-  S.curPlayer = S.active[0]; S.started = true; render();
+  S.started = true; startHole();
 }
 
-function renderPlay() {
-  const h = COURSE.holes.find(x => x.hole===S.hole);
-  const pid = S.curPlayer;
-  const lie = defaultLie(pid, S.hole);
+// ---- Game flow -----------------------------------------------------------
+function startHole(){
+  S.strokeNum = 1;
+  S.order = shuffle(S.active);          // random starter each hole
+  S.turnIdx = 0; S.phase = "shooting"; S.strokeOutcomes = {}; S.pendMull = false;
+  render();
+}
+function nextStroke(leader){
+  if(leader != null) S.order = [leader, ...S.active.filter(p=>p!==leader)];
+  // all-OB keeps the same order/starter
+  S.strokeNum++; S.turnIdx = 0; S.phase = "shooting"; S.strokeOutcomes = {}; S.pendMull = false;
+  render();
+}
+function endHole(){
+  if(S.hole < HOLES){ S.hole++; startHole(); }
+  else { S.finished = true; render(); }
+}
+function logOutcome(k){
+  const pid = S.order[S.turnIdx];
+  const shot_order = S.turnIdx + 1;
+  if(S.pendMull){
+    S.shots.push({ player_id:pid, hole:S.hole, stroke_num:S.strokeNum,
+                   shot_order, outcome:k, best_ball:false, mulligan:true });
+    S.mulliganUsed = true; S.pendMull = false;
+    render(); return;                   // same player re-takes the shot
+  }
+  S.strokeOutcomes[pid] = k;
+  S.turnIdx++;
+  if(S.turnIdx < S.order.length){ render(); return; }
+  resolveStroke();
+}
+function commitStroke(bestSet){
+  S.order.forEach((pid, i) => {
+    S.shots.push({ player_id:pid, hole:S.hole, stroke_num:S.strokeNum, shot_order:i+1,
+                   outcome:S.strokeOutcomes[pid], best_ball:bestSet.has(pid), mulligan:false });
+  });
+}
+function resolveStroke(){
+  const holers = S.order.filter(p=>S.strokeOutcomes[p]==="hole");
+  const allOb  = S.order.every(p=>S.strokeOutcomes[p]==="ob");
+  if(holers.length){ commitStroke(new Set(holers)); endHole(); return; }
+  if(allOb){ commitStroke(new Set()); nextStroke(null); return; }
+  const nonOb = S.order.filter(p=>S.strokeOutcomes[p]!=="ob");
+  if(nonOb.length===1){ commitStroke(new Set(nonOb)); nextStroke(nonOb[0]); return; }
+  S.phase = "pickbest"; render();        // ask who had the best ball
+}
+function pickBest(pid){ commitStroke(new Set([pid])); nextStroke(pid); }
+
+function undo(){
+  if(S.pendMull){ S.pendMull=false; render(); return; }
+  if(S.phase==="pickbest"){ S.phase="shooting"; S.turnIdx=S.order.length-1;
+    delete S.strokeOutcomes[S.order[S.turnIdx]]; render(); return; }
+  if(S.turnIdx>0){ S.turnIdx--; delete S.strokeOutcomes[S.order[S.turnIdx]]; render(); return; }
+  popLastStroke();                       // at the start of a stroke -> undo previous commit
+}
+function popLastStroke(){
+  const inHole = S.shots.filter(x=>x.hole===S.hole);
+  if(!inHole.length) return;             // nothing to undo this hole
+  const prev = Math.max(...inHole.map(x=>x.stroke_num));
+  const removed = S.shots.filter(x=>x.hole===S.hole && x.stroke_num===prev);
+  S.shots = S.shots.filter(x=>!(x.hole===S.hole && x.stroke_num===prev));
+  if(removed.some(x=>x.mulligan)) S.mulliganUsed = false;
+  // rebuild that stroke's order from the removed real shots' shot_order
+  const real = removed.filter(x=>!x.mulligan).sort((a,b)=>a.shot_order-b.shot_order);
+  S.order = real.length ? real.map(x=>x.player_id) : S.order;
+  S.strokeNum = prev; S.turnIdx = 0; S.phase = "shooting"; S.strokeOutcomes = {}; S.pendMull = false;
+  render();
+}
+
+function renderPlay(){
+  const h = COURSE.holes.find(x=>x.hole===S.hole);
+  const pid = S.order[S.turnIdx];
+  const spot = S.strokeNum===1 ? "the tee" : "the chosen ball";
+  // pills: who has hit this stroke so far
+  const pills = S.order.map(p => {
+    if(S.strokeOutcomes[p]==null) return p===pid ? `<span class="pill" style="border-color:#7bd389">${nm(p)} — now</span>` : `<span class="pill">${nm(p)}</span>`;
+    const k=S.strokeOutcomes[p];
+    return `<span class="pill ${k==='ob'?'ob':''}">${nm(p)}: ${LABEL[k]}</span>`;
+  }).join("");
+
+  let body;
+  if(S.phase==="pickbest"){
+    const cands = S.order.filter(p=>S.strokeOutcomes[p]!=="ob");
+    body = `
+      <div class="turn">Who had the best ball?</div>
+      <div class="muted">Everyone plays the next stroke from here; this player goes first.</div>
+      <div class="grid" style="margin-top:10px">
+        ${cands.map(p=>`<button class="btn primary" onclick="pickBest(${p})">${nm(p)}<br><span class="muted">${LABEL[S.strokeOutcomes[p]]}</span></button>`).join("")}
+      </div>
+      <button class="btn sm wide" onclick="undo()">↶ Undo last shot</button>`;
+  } else {
+    body = `
+      <div class="turn">${nm(pid)}'s shot <span class="stroke">· stroke ${S.strokeNum}, from ${spot}</span></div>
+      <div>${pills}</div>
+      <div class="grid" style="margin-top:12px">
+        ${OUTCOMES.map(o=>`<div class="chip outcome ${o.k==='hole'?'hole':''}" onclick="logOutcome('${o.k}')">${o.label}</div>`).join("")}
+      </div>
+      <div class="grid" style="margin-top:10px">
+        <button class="btn sm ${S.pendMull?'primary':''}" onclick="toggleMull()"
+          ${S.mulliganUsed&&!S.pendMull?'disabled style=opacity:.4':''}>
+          ${S.pendMull?'✓ Mulligan armed':'Mulligan (free do-over)'}</button>
+        <button class="btn sm" onclick="undo()">↶ Undo</button>
+      </div>`;
+  }
   app.innerHTML = `
     <div class="card">
       <h2>Hole ${h.hole} · Par ${h.par}</h2>
       <div class="holeinfo">${h.start} → ${h.target}
         ${h.notes?`<br><span class="note">⚠ ${h.notes}</span>`:""}</div>
-      <div class="tabs" id="ptabs"></div>
-      <div class="shotlist" id="shots"></div>
-      <div class="muted">Lie (tap a result to log a shot from here):</div>
-      <div class="grid3" id="lies" style="margin:6px 0 12px"></div>
-      <label>Distance (yds, optional)</label>
-      <input id="dist" type="number" inputmode="decimal" value="${S.pendDist}" placeholder="—">
-      <div class="muted" style="margin-top:12px">Result of the shot:</div>
-      <div class="grid3" id="results" style="margin:6px 0"></div>
-      <div class="grid" style="margin-top:6px">
-        <button class="btn sm ${S.pendMull?'primary':''}" onclick="toggleMull()"
-          ${S.mulliganUsed&&!S.pendMull?'disabled style=opacity:.4':''}>
-          ${S.pendMull?'✓ Mulligan armed':'Mulligan (free do-over)'}</button>
-        <button class="btn sm" onclick="undoShot()">↶ Undo last shot</button>
-      </div>
+      ${body}
     </div>`;
-
-  document.getElementById("ptabs").innerHTML = S.active.map(id => {
-    const nm = S.roster.find(p=>p.player_id===id).name;
-    const st = strokes(id, S.hole);
-    return `<div class="tab ${id===pid?'on':''}" onclick="setPlayer(${id})">${nm} · ${st}</div>`;
-  }).join("");
-
-  const mine = S.shots.filter(x=>x.player_id===pid && x.hole===S.hole);
-  document.getElementById("shots").innerHTML = mine.length
-    ? mine.map((x,i)=>`<div class="shot"><span>${x.mulligan?'<span class="mull">mull</span> ':''}#${i+1} ${x.lie} → <b>${x.result}</b>${x.distance_yds!==null?` · ${x.distance_yds}y`:''}</span></div>`).join("")
-    : `<div class="muted">No shots yet — pick a result below.</div>`;
-
-  document.getElementById("lies").innerHTML = LIES.map(l =>
-    `<div class="chip ${l===(S.pendLie||lie)?'on':''}" onclick="setLie('${l}')">${l}</div>`).join("");
-  document.getElementById("results").innerHTML = RESULTS.map(r =>
-    `<div class="chip" onclick="logShot('${r}')">${r}</div>`).join("");
 }
-function setPlayer(id){ S.curPlayer=id; S.pendLie=null; render(); }
-function setLie(l){ S.pendLie=l; render(); }
 function toggleMull(){ if(S.mulliganUsed&&!S.pendMull) return; S.pendMull=!S.pendMull; render(); }
-
-function logShot(result){
-  const pid = S.curPlayer;
-  const lie = S.pendLie || defaultLie(pid, S.hole);
-  const distEl = document.getElementById("dist");
-  const dist = distEl && distEl.value!=="" ? parseFloat(distEl.value) : null;
-  const isMull = S.pendMull;
-  const shotNum = S.shots.filter(x=>x.player_id===pid && x.hole===S.hole).length + 1;
-  S.shots.push({ player_id:pid, hole:S.hole, shot_num:shotNum,
-                 distance_yds:dist, lie:lie, result:result,
-                 holed: result==="holed" && !isMull, mulligan:isMull });
-  if(isMull) S.mulliganUsed = true;
-  S.pendLie=null; S.pendDist=""; S.pendMull=false;
-  render();
-}
-function undoShot(){
-  const pid=S.curPlayer;
-  for(let i=S.shots.length-1;i>=0;i--){
-    if(S.shots[i].player_id===pid && S.shots[i].hole===S.hole){
-      if(S.shots[i].mulligan) S.mulliganUsed=false;
-      S.shots.splice(i,1); break;
-    }
-  }
-  render();
-}
-
-function nav(d){
-  const n = S.hole + d;
-  if(n<1){ S.started=false; render(); return; }       // back to setup from hole 1
-  if(n>COURSE.holes.length){ S.finished=true; render(); return; }
-  S.hole=n; S.pendLie=null; render();
-}
 
 function renderFinish(){
   const payload = JSON.stringify(exportData(), null, 0);
-  const rows = S.active.map(pid=>{
-    const nm=S.roster.find(p=>p.player_id===pid).name;
-    return `${nm}: ${playerTotal(pid)} strokes`;
+  const contrib = S.active.map(pid=>{
+    const mine = realShots().filter(x=>x.player_id===pid);
+    const best = mine.filter(x=>x.best_ball).length;
+    return `${nm(pid)}: ${mine.length} shots, ${best} best balls`;
   }).join(" · ");
+  const t = teamTotal();
   app.innerHTML = `
     <div class="card">
       <h2>Round complete</h2>
-      <div class="holeinfo">Team best ball: <b>${teamTotal()}</b> vs target ${COURSE.target}
-        — ${teamTotal()<COURSE.target?'🏆 WIN':'no win'}.<br>${rows}</div>
-      <button class="btn primary wide" onclick="emailIt('${encodeURIComponent(payload)}')">📧 Email this round to me</button>
+      <div class="holeinfo">Team total: <b>${t}</b> vs target ${COURSE.target}
+        — ${t<COURSE.target?'🏆 WIN':'no win'}.<br>${contrib}</div>
+      <button class="btn primary wide" onclick="emailIt()">📧 Email this round to me</button>
       <button class="btn wide" onclick="shareIt()">📤 Share / save round</button>
       <button class="btn wide" onclick="copyIt()">📋 Copy round data</button>
-      <label>Round data (paste into scripts/import_log.py)</label>
+      <label>Round data (import with scripts/import_log.py)</label>
       <textarea id="payload" readonly>${payload}</textarea>
       <button class="btn sm wide" onclick="if(confirm('Clear this round and start fresh?')){localStorage.removeItem(KEY);S=newRound();render();}">🗑 Clear & new round</button>
     </div>`;
@@ -263,8 +293,7 @@ function emailIt(){
   location.href = `mailto:${EMAIL}?subject=${encodeURIComponent('Golf round '+S.date)}&body=${body}`;
 }
 async function shareIt(){
-  const text = payloadStr();
-  if(navigator.share){ try{ await navigator.share({title:"Golf round "+S.date, text}); }catch(e){} }
+  if(navigator.share){ try{ await navigator.share({title:"Golf round "+S.date, text:payloadStr()}); }catch(e){} }
   else copyIt();
 }
 function copyIt(){
@@ -272,18 +301,6 @@ function copyIt(){
   navigator.clipboard?.writeText(txt).then(()=>alert("Copied!"), ()=>{ if(t){t.select();document.execCommand('copy');} });
 }
 
-// ---- Bottom nav ----------------------------------------------------------
-function renderBottom(){
-  let b = document.querySelector(".bottom");
-  if(!b){ b=document.createElement("div"); b.className="bottom"; document.body.appendChild(b); }
-  if(!S.started || S.finished){ b.classList.add("hidden"); return; }
-  b.classList.remove("hidden");
-  b.innerHTML = `
-    <button class="btn" onclick="nav(-1)">← ${S.hole===1?'Setup':'Hole '+(S.hole-1)}</button>
-    <button class="btn primary" onclick="nav(1)">${S.hole===COURSE.holes.length?'Finish ✓':'Hole '+(S.hole+1)+' →'}</button>`;
-}
-const _render = render;
-render = function(){ _render(); renderBottom(); };
 render();
 </script>
 </body>

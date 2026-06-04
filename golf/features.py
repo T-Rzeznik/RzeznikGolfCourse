@@ -18,22 +18,37 @@ def _holes_meta() -> pd.DataFrame:
     return h[[c for c in cols if c in h.columns]]
 
 
+def _round_n_players() -> pd.DataFrame:
+    """One row per round: how many players were on the team."""
+    rounds = gdata.load_rounds()
+    if rounds.empty:
+        return pd.DataFrame(columns=["round_id", "n_players"])
+    rounds = rounds.copy()
+    rounds["n_players"] = rounds["players"].fillna("").apply(
+        lambda s: len([p for p in str(s).split("|") if p])
+    )
+    return rounds[["round_id", "n_players"]]
+
+
 # 1) SCORE PREDICTION -------------------------------------------------------
 def score_prediction() -> pd.DataFrame:
-    """Predict strokes on a (round, player, hole). Target = `strokes`."""
+    """Predict the team's strokes on a (round, hole). Target = `team_strokes`."""
     hs = gdata.hole_scores()
     if hs.empty:
         return hs
-    feats = hs.merge(_holes_meta(), on=["hole", "par"], how="left")
-    return feats  # X = [player_id, hole, par, yards, dogleg, blind], y = strokes
+    feats = (
+        hs.merge(_holes_meta(), on=["hole", "par"], how="left")
+        .merge(_round_n_players(), on="round_id", how="left")
+    )
+    return feats  # X = [hole, par, dogleg, blind, n_players], y = team_strokes
 
 
 # 2) WIN PROBABILITY --------------------------------------------------------
 def win_probability() -> pd.DataFrame:
-    """Best-ball team result, one row per round. Target = `won` (beat target).
+    """Scramble team result, one row per round. Target = `won` (beat target).
 
     Adds:
-      * `n_players` in the round (more players -> better best ball).
+      * `n_players` in the round (more players -> better scramble score).
       * `prior_avg_to_par`: the team's mean to_par over prior rounds (expanding,
         shifted so the current round never leaks into its own feature).
     """
@@ -52,17 +67,17 @@ def win_probability() -> pd.DataFrame:
 
 # 3) HOLE DIFFICULTY --------------------------------------------------------
 def hole_difficulty() -> pd.DataFrame:
-    """One row per hole: average score-to-par and related stats."""
+    """One row per hole: average team strokes / score-to-par and related stats."""
     hs = gdata.hole_scores()
     if hs.empty:
         return hs
     agg = (
         hs.groupby("hole")
         .agg(
-            rounds_played=("strokes", "count"),
-            avg_strokes=("strokes", "mean"),
+            rounds_played=("team_strokes", "count"),
+            avg_strokes=("team_strokes", "mean"),
             avg_to_par=("to_par", "mean"),
-            std_strokes=("strokes", "std"),
+            std_strokes=("team_strokes", "std"),
         )
         .reset_index()
         .merge(_holes_meta(), on="hole", how="left")
@@ -73,16 +88,19 @@ def hole_difficulty() -> pd.DataFrame:
 
 # 4) SHOT OUTCOME -----------------------------------------------------------
 def shot_outcome() -> pd.DataFrame:
-    """One row per counting shot. Target = `result` (where the ball ended up).
+    """One row per counting shot. Target = `outcome` (one of six).
 
-    With one club, outcome is driven by lie, distance, and where in the hole the
-    shot is. Mulligan do-overs are excluded so we model real attempts.
+    With one club and no distance/lie tracking, this is purely categorical
+    (player, hole, where in the hole, shot order, team size), so expect modest
+    signal. Mulligan do-overs are excluded so we model real attempts.
     """
     shots = gdata.counting_shots(gdata.load_shots())
     if shots.empty:
         return shots
     pars = gdata.holes_frame()[["hole", "par"]]
-    feats = shots.merge(pars, on="hole", how="left")
-    feats["is_tee_shot"] = feats["shot_num"] == 1
-    feats["went_ob"] = feats["result"] == "ob"
-    return feats  # X = [distance_yds, lie, hole, par, shot_num], y = result
+    feats = (
+        shots.merge(pars, on="hole", how="left")
+        .merge(_round_n_players(), on="round_id", how="left")
+    )
+    feats["is_first"] = feats["shot_order"] == 1
+    return feats  # X = [player_id, hole, par, stroke_num, shot_order, n_players], y = outcome

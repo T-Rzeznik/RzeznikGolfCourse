@@ -1,7 +1,8 @@
 """Load, validate, aggregate, and append the golf data.
 
-The per-shot table (`shots.csv`) is the source of truth. Hole and round
-scorecards are *derived* here so they can never drift out of sync.
+The per-shot table (`shots.csv`) is the source of truth — one row per player per
+scramble stroke. Team scorecards are *derived* here so they can never drift out
+of sync. See schema.py for the scramble invariant every rule below follows from.
 """
 from __future__ import annotations
 
@@ -35,11 +36,13 @@ def load_shots() -> pd.DataFrame:
     df = pd.read_csv(schema.SHOTS_FILE)
     if df.empty:
         return df
-    df["holed"] = df["holed"].astype("boolean")
-    # `mulligan` may be missing in older files; default to False.
-    if "mulligan" not in df.columns:
-        df["mulligan"] = False
-    df["mulligan"] = df["mulligan"].fillna(False).astype("boolean")
+    for col in ("hole", "stroke_num", "shot_order"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    for col in ("best_ball", "mulligan"):
+        if col not in df.columns:
+            df[col] = False
+        df[col] = df[col].fillna(False).astype("boolean")
     return df
 
 
@@ -54,76 +57,83 @@ def counting_shots(shots: pd.DataFrame) -> pd.DataFrame:
     return shots[~shots["mulligan"].fillna(False)]
 
 
+def active_players(rounds: pd.DataFrame | None = None) -> dict:
+    """Map round_id -> list of player_ids active that round (from rounds.csv)."""
+    rounds = load_rounds() if rounds is None else rounds
+    out = {}
+    for row in rounds.itertuples(index=False):
+        out[int(row.round_id)] = [int(p) for p in str(row.players).split("|") if p]
+    return out
+
+
 # --- Derived scorecards ----------------------------------------------------
 def hole_scores() -> pd.DataFrame:
-    """One row per (round, player, hole): strokes plus par/score-to-par.
+    """Team score per hole: one row per (round, hole).
 
-    Strokes exclude mulligan do-overs.
+    Scramble team score = number of strokes taken = max(stroke_num) over the
+    counting shots (an all-OB re-hit bumps stroke_num, so it correctly costs a
+    stroke). Mulligan do-overs are excluded.
     """
     shots = load_shots()
     if shots.empty:
         return pd.DataFrame(
-            columns=["round_id", "player_id", "hole", "strokes", "par", "to_par"]
+            columns=["round_id", "hole", "team_strokes", "par", "to_par"]
         )
-    strokes = (
+    team = (
         counting_shots(shots)
-        .groupby(["round_id", "player_id", "hole"])
-        .size()
-        .reset_index(name="strokes")
+        .groupby(["round_id", "hole"])["stroke_num"]
+        .max()
+        .reset_index(name="team_strokes")
     )
     pars = holes_frame()[["hole", "par"]]
-    out = strokes.merge(pars, on="hole", how="left")
-    out["to_par"] = out["strokes"] - out["par"]
+    out = team.merge(pars, on="hole", how="left")
+    out["to_par"] = out["team_strokes"] - out["par"]
     return out
 
 
-def player_round_scores() -> pd.DataFrame:
-    """One row per (round, player): individual total strokes and to_par.
-
-    Best ball is a team game, so this is for individual analysis, not winning.
-    """
-    hs = hole_scores()
-    if hs.empty:
-        return pd.DataFrame(columns=["round_id", "player_id", "total", "to_par"])
-    return (
-        hs.groupby(["round_id", "player_id"])
-        .agg(total=("strokes", "sum"), to_par=("to_par", "sum"))
-        .reset_index()
-    )
-
-
-def team_hole_scores() -> pd.DataFrame:
-    """Best ball: one row per (round, hole) = the best score among the players."""
-    hs = hole_scores()
-    if hs.empty:
-        return pd.DataFrame(columns=["round_id", "hole", "team_strokes", "par", "to_par"])
-    team = (
-        hs.groupby(["round_id", "hole"])
-        .agg(team_strokes=("strokes", "min"), par=("par", "first"))
-        .reset_index()
-    )
-    team["to_par"] = team["team_strokes"] - team["par"]
-    return team
-
-
 def round_scores() -> pd.DataFrame:
-    """Best-ball team result, one row per round.
+    """Scramble team result, one row per round.
 
     `won` = team total beat the target score (default: course par total).
     """
-    ths = team_hole_scores()
-    if ths.empty:
+    hs = hole_scores()
+    if hs.empty:
         return pd.DataFrame(
             columns=["round_id", "team_total", "to_par", "target", "won"]
         )
     out = (
-        ths.groupby("round_id")
+        hs.groupby("round_id")
         .agg(team_total=("team_strokes", "sum"), to_par=("to_par", "sum"))
         .reset_index()
     )
     out["target"] = target_score()
     out["won"] = out["team_total"] < out["target"]
     return out
+
+
+def player_contributions() -> pd.DataFrame:
+    """Per (round, player): how each player contributed in the scramble.
+
+    `shots` = counting shots hit; `best_balls` = times their ball was kept
+    (includes the holing ball). The remaining columns are per-outcome counts.
+    """
+    shots = load_shots()
+    base_cols = ["round_id", "player_id", "shots", "best_balls"]
+    if shots.empty:
+        return pd.DataFrame(columns=base_cols)
+    cs = counting_shots(shots)
+    out = (
+        cs.groupby(["round_id", "player_id"])
+        .agg(shots=("shot_id", "count"), best_balls=("best_ball", "sum"))
+        .reset_index()
+    )
+    counts = (
+        cs.pivot_table(index=["round_id", "player_id"], columns="outcome",
+                       values="shot_id", aggfunc="count", fill_value=0)
+        .reset_index()
+    )
+    counts.columns.name = None
+    return out.merge(counts, on=["round_id", "player_id"], how="left")
 
 
 # --- Validation ------------------------------------------------------------
@@ -136,13 +146,11 @@ def validate() -> list[str]:
 
     valid_holes = set(holes_frame()["hole"])
     valid_players = set(load_players()["player_id"])
+    rosters = active_players()
 
-    bad_lies = set(shots["lie"].dropna()) - set(schema.LIES)
-    if bad_lies:
-        problems.append(f"Unknown lies: {sorted(bad_lies)}")
-    bad_results = set(shots["result"].dropna()) - set(schema.RESULTS)
-    if bad_results:
-        problems.append(f"Unknown results: {sorted(bad_results)}")
+    bad_outcomes = set(shots["outcome"].dropna()) - set(schema.OUTCOMES)
+    if bad_outcomes:
+        problems.append(f"Unknown outcomes: {sorted(bad_outcomes)}")
     bad_holes = set(shots["hole"]) - valid_holes
     if bad_holes:
         problems.append(f"Holes not on the course: {sorted(bad_holes)}")
@@ -150,18 +158,72 @@ def validate() -> list[str]:
     if bad_players:
         problems.append(f"Unknown player_ids: {sorted(bad_players)}")
 
-    # Every (round, player, hole) must end on exactly one holed shot.
-    grp = shots.groupby(["round_id", "player_id", "hole"])["holed"].sum()
-    not_finished = grp[grp != 1]
-    for (rid, pid, hole), n in not_finished.items():
-        problems.append(
-            f"Round {rid} player {pid} hole {hole}: {int(n)} holed shots (expected 1)"
-        )
+    # One mulligan per round; each mulligan shares its slot with a real do-over.
+    mull = shots[shots["mulligan"].fillna(False)]
+    for rid, n in mull.groupby("round_id").size().items():
+        if n > 1:
+            problems.append(f"Round {rid}: {int(n)} mulligans used (max 1 per round)")
+    counting = counting_shots(shots)
+    for key, grp in mull.groupby(["round_id", "hole", "player_id", "stroke_num"]):
+        rid, hole, pid, sn = key
+        replaced = counting[
+            (counting["round_id"] == rid) & (counting["hole"] == hole)
+            & (counting["player_id"] == pid) & (counting["stroke_num"] == sn)
+        ]
+        if replaced.empty:
+            problems.append(
+                f"Round {rid} hole {hole} player {pid} stroke {sn}: "
+                "mulligan has no do-over replacement"
+            )
 
-    # One mulligan per round for the group.
-    mull = shots[shots["mulligan"].fillna(False)].groupby("round_id").size()
-    for rid, n in mull[mull > 1].items():
-        problems.append(f"Round {rid}: {int(n)} mulligans used (max 1 per round)")
+    # Everything below is evaluated on counting shots, per (round, hole).
+    for (rid, hole), grp in counting.groupby(["round_id", "hole"]):
+        roster = rosters.get(int(rid), [])
+        n_players = len(roster)
+        if not 1 <= n_players <= 3:
+            problems.append(f"Round {rid}: {n_players} players (expected 1-3)")
+
+        strokes = sorted(int(x) for x in grp["stroke_num"].dropna().unique())
+        max_s = max(strokes)
+        if strokes != list(range(1, max_s + 1)):
+            problems.append(f"Round {rid} hole {hole}: stroke numbers not 1..{max_s} ({strokes})")
+
+        # `hole` outcomes only allowed on the final stroke, and >=1 there.
+        holed_strokes = sorted(int(x) for x in grp[grp["outcome"] == "hole"]["stroke_num"].unique())
+        if holed_strokes != [max_s]:
+            problems.append(
+                f"Round {rid} hole {hole}: 'hole' outcomes on strokes {holed_strokes} "
+                f"(expected only the final stroke {max_s})"
+            )
+
+        for sn, sgrp in grp.groupby("stroke_num"):
+            # Every active player hits exactly once each stroke.
+            counts = sgrp["player_id"].value_counts()
+            missing = set(roster) - set(counts.index)
+            if missing:
+                problems.append(f"Round {rid} hole {hole} stroke {sn}: missing players {sorted(missing)}")
+            dupes = counts[counts > 1]
+            for pid, c in dupes.items():
+                problems.append(f"Round {rid} hole {hole} stroke {sn}: player {pid} has {int(c)} counting shots")
+
+            best = sgrp[sgrp["best_ball"].fillna(False)]
+            all_ob = (sgrp["outcome"] == "ob").all()
+            if (best["outcome"] == "ob").any():
+                problems.append(f"Round {rid} hole {hole} stroke {sn}: best ball can't be an OB shot")
+            if sn == max_s:
+                # Final stroke: best_ball is exactly the holing ball(s).
+                holing = set(sgrp[sgrp["outcome"] == "hole"]["shot_id"])
+                marked = set(best["shot_id"])
+                if holing != marked:
+                    problems.append(
+                        f"Round {rid} hole {hole} final stroke: best_ball should mark the "
+                        f"holing ball(s) {sorted(holing)}, got {sorted(marked)}"
+                    )
+            elif all_ob:
+                if len(best):
+                    problems.append(f"Round {rid} hole {hole} stroke {sn}: all-OB stroke should have no best ball")
+            elif len(best) != 1:
+                problems.append(f"Round {rid} hole {hole} stroke {sn}: {len(best)} best balls (expected 1)")
     return problems
 
 

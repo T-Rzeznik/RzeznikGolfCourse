@@ -71,10 +71,11 @@ def main():
         shot_rows.append({
             "shot_id": shot_id, "round_id": round_id,
             "player_id": local_to_repo[sh["player_id"]],
-            "hole": sh["hole"], "shot_num": sh["shot_num"],
-            "distance_yds": sh.get("distance_yds"),
-            "lie": sh["lie"], "result": sh["result"],
-            "holed": bool(sh["holed"]), "mulligan": bool(sh.get("mulligan", False)),
+            "hole": sh["hole"], "stroke_num": sh["stroke_num"],
+            "shot_order": sh.get("shot_order"),
+            "outcome": sh["outcome"],
+            "best_ball": bool(sh.get("best_ball", False)),
+            "mulligan": bool(sh.get("mulligan", False)),
         })
         shot_id += 1
 

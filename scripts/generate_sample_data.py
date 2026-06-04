@@ -1,5 +1,5 @@
-"""Generate synthetic rounds so you can exercise the analysis/ML pipeline
-before you've logged real games.
+"""Generate synthetic scramble rounds so you can exercise the analysis/ML
+pipeline before you've logged real games.
 
     python scripts/generate_sample_data.py            # writes to data/sample/
     python scripts/generate_sample_data.py --into-data # appends to real data (careful!)
@@ -21,37 +21,73 @@ from golf import schema  # noqa: E402
 RNG = random.Random(42)
 
 SAMPLE_PLAYERS = [(1, "Tommy", "R"), (2, "Alex", "R"), (3, "Sam", "L")]
+MAX_STROKES = 8  # safety cap; force a hole-out if we somehow reach it
 
 
-def simulate_hole(hole, round_id, player_id, skill, shot_id, allow_mulligan):
-    """Return (rows, shot_id, used_mulligan) for one hole (sand wedge only)."""
-    par = hole["par"]
-    # strokes ~ par +/- a bit, nudged by skill
-    strokes = max(2, round(RNG.gauss(par + 0.4 - skill, 0.9)))
+def outcome_weights(stroke, skill):
+    """Weights over schema.OUTCOMES; `hole` grows with stroke + skill so holes end.
+
+    schema.OUTCOMES == [ob, overshoot, grounder, short_pop, good, hole]. Tuned so
+    holes take ~3 strokes (you rarely hole on the first stroke from the tee).
+    """
+    hole_w = max(0.05, 0.15 + 0.7 * (stroke - 1) + 0.3 * skill)
+    return [0.6, 0.9, 1.4, 1.6, 1.6, hole_w]
+
+
+def simulate_hole(hole, round_id, players, skills, shot_id, allow_mulligan):
+    """Simulate one scramble hole for the whole team.
+
+    Returns (rows, next_shot_id, used_mulligan).
+    """
     rows = []
     used_mulligan = False
+    order = players[:]
+    RNG.shuffle(order)  # random starter for the hole
+    stroke = 1
 
-    def add(shot_num, lie, result, holed, mulligan):
+    def emit(pid, order_idx, outcome, best_ball, mulligan):
         nonlocal shot_id
         rows.append({
-            "shot_id": shot_id, "round_id": round_id, "player_id": player_id,
-            "hole": hole["hole"], "shot_num": shot_num,
-            "distance_yds": round(RNG.uniform(5, 35), 1),
-            "lie": lie, "result": result, "holed": holed, "mulligan": mulligan,
+            "shot_id": shot_id, "round_id": round_id, "player_id": pid,
+            "hole": hole["hole"], "stroke_num": stroke, "shot_order": order_idx,
+            "outcome": outcome, "best_ball": best_ball, "mulligan": mulligan,
         })
         shot_id += 1
 
-    for s in range(1, strokes + 1):
-        holed = s == strokes
-        lie = "tee" if s == 1 else RNG.choice(["fairway", "rough", "green", "green"])
-        result = "holed" if holed else RNG.choice(
-            ["fairway", "rough", "green", "green", "sand", "ob"]
-        )
-        # Rarely, the tee shot was a do-over: log a discarded mulligan first.
-        if s == 1 and allow_mulligan and not used_mulligan and RNG.random() < 0.25:
-            add(1, "tee", "ob", False, True)
-            used_mulligan = True
-        add(s, lie, result, holed, False)
+    while True:
+        outcomes = {
+            pid: RNG.choices(schema.OUTCOMES, weights=outcome_weights(stroke, skills[pid]))[0]
+            for pid in order
+        }
+        if stroke >= MAX_STROKES:
+            outcomes[order[0]] = "hole"  # terminate
+
+        holers = [pid for pid in order if outcomes[pid] == "hole"]
+        all_ob = all(outcomes[pid] == "ob" for pid in order)
+        if holers:
+            best = set(holers)
+        elif all_ob:
+            best = set()
+        else:
+            ranked = [(schema.OUTCOMES.index(outcomes[pid]), pid)
+                      for pid in order if outcomes[pid] != "ob"]
+            top = max(r for r, _ in ranked)
+            best = {RNG.choice([pid for r, pid in ranked if r == top])}
+
+        for idx, pid in enumerate(order, start=1):
+            # Rarely, a player took a do-over: log the discarded mulligan first.
+            if allow_mulligan and not used_mulligan and RNG.random() < 0.05:
+                emit(pid, idx, RNG.choice(["ob", "overshoot"]), False, True)
+                used_mulligan = True
+            emit(pid, idx, outcomes[pid], pid in best, False)
+
+        if holers:
+            break
+        if not all_ob:  # winner leads next stroke; all-OB keeps the same order
+            leader = next(iter(best))
+            order = [leader] + [p for p in players if p != leader]
+        stroke += 1
+
     return rows, shot_id, used_mulligan
 
 
@@ -76,16 +112,14 @@ def main():
         round_rows.append({"round_id": round_id, "date": date,
                            "players": "|".join(map(str, players)), "notes": "sample"})
         round_mulligan_used = False  # one per round for the group
-        for pid in players:
-            for hole in holes:
-                rows, shot_id, used = simulate_hole(
-                    hole, round_id, pid, skills[pid], shot_id,
-                    allow_mulligan=not round_mulligan_used)
-                round_mulligan_used = round_mulligan_used or used
-                shot_rows.extend(rows)
+        for hole in holes:
+            rows, shot_id, used = simulate_hole(
+                hole, round_id, players, skills, shot_id,
+                allow_mulligan=not round_mulligan_used)
+            round_mulligan_used = round_mulligan_used or used
+            shot_rows.extend(rows)
 
     if args.into_data:
-        out_dir = schema.DATA_DIR
         pd.DataFrame(SAMPLE_PLAYERS, columns=["player_id", "name", "hand"]).assign(
             notes="").to_csv(schema.PLAYERS_FILE, index=False)
         gdata.append_rounds(round_rows)

@@ -1,1 +1,1 @@
-shot_id,round_id,player_id,hole,shot_num,distance_yds,lie,result,holed,mulligan
+shot_id,round_id,player_id,hole,stroke_num,shot_order,outcome,best_ball,mulligan
