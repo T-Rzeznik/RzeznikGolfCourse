@@ -36,13 +36,15 @@ def load_shots() -> pd.DataFrame:
     df = pd.read_csv(schema.SHOTS_FILE)
     if df.empty:
         return df
-    for col in ("hole", "stroke_num", "shot_order"):
+    for col in ("hole", "stroke_num", "shot_order", "ts"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
     for col in ("best_ball", "mulligan"):
         if col not in df.columns:
             df[col] = False
         df[col] = df[col].fillna(False).astype("boolean")
+    if "distance" not in df.columns:
+        df["distance"] = pd.NA
     return df
 
 
@@ -52,9 +54,14 @@ def target_score() -> int:
     return int(course.get("target_score", course["par_total"]))
 
 
+def _flag(series: pd.Series) -> pd.Series:
+    """A boolean column as a real bool Series (robust to object/NA dtypes)."""
+    return series.fillna(False).astype(bool)
+
+
 def counting_shots(shots: pd.DataFrame) -> pd.DataFrame:
     """Shots that count toward the score (mulligan do-overs removed)."""
-    return shots[~shots["mulligan"].fillna(False)]
+    return shots[~_flag(shots["mulligan"])]
 
 
 def active_players(rounds: pd.DataFrame | None = None) -> dict:
@@ -137,20 +144,42 @@ def player_contributions() -> pd.DataFrame:
 
 
 # --- Validation ------------------------------------------------------------
-def validate() -> list[str]:
-    """Return a list of human-readable data problems ([] means clean)."""
+def validate(
+    shots: pd.DataFrame | None = None,
+    rounds: pd.DataFrame | None = None,
+    players: pd.DataFrame | None = None,
+) -> list[str]:
+    """Return a list of human-readable data problems ([] means clean).
+
+    Loads from disk by default, but accepts in-memory frames so a *candidate*
+    round can be validated before it's written (see scripts/import_log.py).
+    """
     problems: list[str] = []
-    shots = load_shots()
+    shots = load_shots() if shots is None else shots
     if shots.empty:
         return problems
 
     valid_holes = set(holes_frame()["hole"])
-    valid_players = set(load_players()["player_id"])
-    rosters = active_players()
+    players = load_players() if players is None else players
+    valid_players = set(players["player_id"])
+    rosters = active_players(rounds)
+
+    # Round-level conditions are optional, but if present must be in-vocabulary.
+    rounds_df = load_rounds() if rounds is None else rounds
+    for col, vocab in (("ground", schema.GROUND), ("wind", schema.WIND)):
+        if col in rounds_df.columns:
+            vals = rounds_df[col].dropna().astype(str)
+            bad = set(vals[vals.str.len() > 0]) - set(vocab)
+            if bad:
+                problems.append(f"Unknown {col} values: {sorted(bad)}")
 
     bad_outcomes = set(shots["outcome"].dropna()) - set(schema.OUTCOMES)
     if bad_outcomes:
         problems.append(f"Unknown outcomes: {sorted(bad_outcomes)}")
+    if "distance" in shots.columns:
+        bad_dist = set(shots["distance"].dropna().astype(str)) - set(schema.DISTANCES) - {""}
+        if bad_dist:
+            problems.append(f"Unknown distances: {sorted(bad_dist)}")
     bad_holes = set(shots["hole"]) - valid_holes
     if bad_holes:
         problems.append(f"Holes not on the course: {sorted(bad_holes)}")
@@ -159,7 +188,7 @@ def validate() -> list[str]:
         problems.append(f"Unknown player_ids: {sorted(bad_players)}")
 
     # One mulligan per round; each mulligan shares its slot with a real do-over.
-    mull = shots[shots["mulligan"].fillna(False)]
+    mull = shots[_flag(shots["mulligan"])]
     for rid, n in mull.groupby("round_id").size().items():
         if n > 1:
             problems.append(f"Round {rid}: {int(n)} mulligans used (max 1 per round)")
@@ -206,7 +235,21 @@ def validate() -> list[str]:
             for pid, c in dupes.items():
                 problems.append(f"Round {rid} hole {hole} stroke {sn}: player {pid} has {int(c)} counting shots")
 
-            best = sgrp[sgrp["best_ball"].fillna(False)]
+            # Distance is a property of the spot, so the whole stroke shares one
+            # value. Stroke 1 is always the tee; later strokes are anything but.
+            if "distance" in sgrp.columns:
+                dvals = {str(d) for d in sgrp["distance"].dropna() if str(d)}
+                # Distance is optional: older logs predate distance capture, so a
+                # blank stroke simply isn't conditioned on distance. But any value
+                # that *is* present must obey the one-spot-per-stroke and tee rules.
+                if len(dvals) > 1:
+                    problems.append(f"Round {rid} hole {hole} stroke {sn}: mixed distances {sorted(dvals)} (one spot per stroke)")
+                elif sn == 1 and dvals and dvals != {"tee"}:
+                    problems.append(f"Round {rid} hole {hole}: stroke 1 distance is {sorted(dvals)} (expected 'tee')")
+                elif sn != 1 and "tee" in dvals:
+                    problems.append(f"Round {rid} hole {hole} stroke {sn}: distance 'tee' only valid on stroke 1")
+
+            best = sgrp[_flag(sgrp["best_ball"])]
             # A ball that's OB or skipped can never be kept, so if every ball is
             # OB/skipped no progress is made and the team re-hits (no best ball).
             no_advance = sgrp["outcome"].isin(["ob", "skip"]).all()
@@ -249,3 +292,72 @@ def _append(path, rows: list[dict], columns: list[str]) -> None:
     new = pd.DataFrame(rows, columns=columns)
     combined = pd.concat([existing, new], ignore_index=True)
     combined.to_csv(path, index=False)
+
+
+# --- Round intake ----------------------------------------------------------
+class RoundRejected(Exception):
+    """A candidate round failed the scramble invariant; nothing was written.
+
+    Carries `.problems`, the human-readable validation messages, so the caller
+    can decide what to do (quarantine, re-prompt, or raise).
+    """
+
+    def __init__(self, problems: list[str]):
+        self.problems = problems
+        super().__init__("; ".join(problems))
+
+
+def commit_round(shot_rows: list[dict], round_meta: dict,
+                 players: pd.DataFrame | None = None) -> int:
+    """Land one round in the data set — the single seam every writer goes through.
+
+    Takes UNSHAPED shot rows (no ids) with resolved `player_id`s plus round
+    conditions, assigns the next `round_id`/`shot_id`, derives the roster from the
+    distinct players in the shots, then validates the candidate data set before
+    writing. On success it appends shots and the round atomically and returns the
+    new `round_id`; on failure it raises `RoundRejected` and writes nothing.
+
+    `players` is the roster to validate against (defaults to the players on disk);
+    an importer creating new players passes its candidate roster here.
+    """
+    rounds = load_rounds()
+    shots = load_shots()
+    round_id = next_id(rounds, "round_id")
+    shot_id = next_id(shots, "shot_id")
+
+    player_ids = sorted({int(r["player_id"]) for r in shot_rows})
+
+    new_shots = []
+    for r in shot_rows:
+        row = {c: r.get(c) for c in schema.SHOT_COLUMNS}
+        row["shot_id"] = shot_id
+        row["round_id"] = round_id
+        row["best_ball"] = bool(r.get("best_ball", False))
+        row["mulligan"] = bool(r.get("mulligan", False))
+        new_shots.append(row)
+        shot_id += 1
+
+    round_row = {
+        "round_id": round_id,
+        "date": round_meta.get("date", ""),
+        "players": "|".join(str(p) for p in player_ids),
+        "ground": round_meta.get("ground", ""),
+        "wind": round_meta.get("wind", ""),
+        "client_round_id": round_meta.get("client_round_id", ""),
+        "notes": round_meta.get("notes", ""),
+    }
+
+    cand_shots = pd.concat(
+        [shots, pd.DataFrame(new_shots, columns=schema.SHOT_COLUMNS)],
+        ignore_index=True)
+    cand_rounds = pd.concat(
+        [rounds, pd.DataFrame([round_row], columns=schema.ROUND_COLUMNS)],
+        ignore_index=True)
+    problems = validate(shots=cand_shots, rounds=cand_rounds, players=players)
+    mine = [p for p in problems if f"Round {round_id}" in p or "Unknown" in p]
+    if mine:
+        raise RoundRejected(mine)
+
+    append_shots(new_shots)
+    append_rounds([round_row])
+    return round_id

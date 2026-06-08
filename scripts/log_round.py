@@ -9,11 +9,14 @@ everyone goes OB the team re-hits the same spot (+1 stroke). One mulligan/round.
 """
 import random
 import sys
+import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from golf import data as gdata  # noqa: E402
+from golf import scramble  # noqa: E402
 from golf import schema  # noqa: E402
 
 RNG = random.Random()
@@ -48,24 +51,28 @@ def main():
     date = prompt("Date (YYYY-MM-DD): ")
     pids = prompt("Player ids in this round (comma-separated): ")
     player_ids = [int(x) for x in pids.split(",")]
+    ground = prompt(f"Ground ({'/'.join(schema.GROUND)}, blank to skip): ",
+                    valid=schema.GROUND, allow_blank=True) or ""
+    wind = prompt(f"Wind ({'/'.join(schema.WIND)}, blank to skip): ",
+                  valid=schema.WIND, allow_blank=True) or ""
     notes = prompt("Round notes (optional): ", allow_blank=True) or ""
 
-    round_id = gdata.next_id(gdata.load_rounds(), "round_id")
-    shot_id = gdata.next_id(gdata.load_shots(), "shot_id")
+    client_round_id = str(uuid.uuid4())
     shot_rows = []
     mulligan_used = False
+    non_tee = [d for d in schema.DISTANCES if d != "tee"]
 
     print("\n(Outcomes: " + ", ".join(schema.OUTCOMES) + ". One mulligan per round: "
           "answer y when a shot was a free do-over, then re-take it.)")
 
-    def add(pid, stroke, order_idx, outcome, best_ball, mulligan):
-        nonlocal shot_id
+    def add(pid, stroke, order_idx, outcome, best_ball, mulligan, distance):
+        # Unshaped row — commit_round assigns shot_id / round_id at the end.
         shot_rows.append({
-            "shot_id": shot_id, "round_id": round_id, "player_id": pid,
-            "hole": hole_num, "stroke_num": stroke, "shot_order": order_idx,
-            "outcome": outcome, "best_ball": best_ball, "mulligan": mulligan,
+            "player_id": pid, "hole": hole_num, "stroke_num": stroke,
+            "shot_order": order_idx, "outcome": outcome, "distance": distance,
+            "best_ball": best_ball, "mulligan": mulligan,
+            "ts": int(time.time() * 1000),
         })
-        shot_id += 1
 
     for hole_num, hole in holes.items():
         print(f"\n=== Hole {hole_num} (par {hole['par']}): {hole['start']} -> {hole['target']} ===")
@@ -78,6 +85,9 @@ def main():
             spot = "the tee" if stroke == 1 else "the chosen ball"
             print(f"\n Stroke {stroke} — everyone plays from {spot}. "
                   f"Order: {', '.join(names[p] for p in order)}")
+            # Distance to target of the shared spot (stroke 1 is always the tee).
+            dist = "tee" if stroke == 1 else prompt(
+                f"   distance to target ({'/'.join(non_tee)}): ", valid=non_tee)
             stroke_outcomes = {}
             for idx, pid in enumerate(order, start=1):
                 while True:
@@ -86,58 +96,63 @@ def main():
                         ans = prompt("     mulligan (free do-over)? y/N: ",
                                      allow_blank=True) or "n"
                         if ans.lower().startswith("y"):
-                            add(pid, stroke, idx, outcome, False, True)
+                            add(pid, stroke, idx, outcome, False, True, dist)
                             mulligan_used = True
                             print("     (mulligan logged — now re-take the shot)")
                             continue
                     break
                 stroke_outcomes[pid] = (idx, outcome)
 
+            outs = [stroke_outcomes[p][1] for p in order]
+            elig = scramble.suggest_best_ball(outs)  # indices into `order`
             holers = [p for p in order if stroke_outcomes[p][1] == "hole"]
-            all_ob = all(stroke_outcomes[p][1] == "ob" for p in order)
+            # A ball that's OB/skipped can't be kept; the rest are legal to keep.
+            legal = [p for p in order if stroke_outcomes[p][1] not in ("ob", "skip")]
             best = set()
             if holers:
                 best = set(holers)
-            elif all_ob:
+            elif not legal:
                 print("   Everyone OB — re-hit from the same spot (+1 stroke).")
+            elif len(legal) == 1:
+                best = {legal[0]}  # no choice to make
             else:
-                non_ob = [p for p in order if stroke_outcomes[p][1] != "ob"]
-                if len(non_ob) == 1:
-                    best = {non_ob[0]}
-                else:
-                    print("   Who had the best ball?")
-                    for p in non_ob:
-                        print(f"     {p}: {names[p]} ({stroke_outcomes[p][1]})")
-                    bid = prompt("   best ball player id: ",
-                                 valid=[str(p) for p in non_ob])
-                    best = {int(bid)}
+                # Suggest the rank-best ball, but let the user keep any legal ball
+                # (a worse outcome can be better positioned). Enter = the suggestion.
+                suggested = order[min(elig)]
+                print("   Who had the best ball? (Enter = suggested)")
+                for p in legal:
+                    star = "  <- suggested" if p == suggested else ""
+                    print(f"     {p}: {names[p]} ({stroke_outcomes[p][1]}){star}")
+                bid = prompt(f"   best ball player id [{suggested}]: ",
+                             valid=[str(p) for p in legal], allow_blank=True)
+                best = {suggested if bid is None else int(bid)}
 
             for pid in order:
                 idx, outcome = stroke_outcomes[pid]
-                add(pid, stroke, idx, outcome, pid in best, False)
+                add(pid, stroke, idx, outcome, pid in best, False, dist)
 
             if holers:
                 print(f"   Holed! Team took {stroke} strokes on hole {hole_num}.")
                 break
-            if not all_ob:
+            if best:  # someone advanced — they lead next stroke; all-OB keeps order
                 leader = next(iter(best))
                 order = [leader] + [p for p in player_ids if p != leader]
             stroke += 1
 
-    gdata.append_rounds([{
-        "round_id": round_id, "date": date,
-        "players": "|".join(str(p) for p in player_ids), "notes": notes,
-    }])
-    gdata.append_shots(shot_rows)
-    print(f"\nSaved round {round_id} ({len(shot_rows)} shots).")
-
-    problems = gdata.validate()
-    if problems:
-        print("\n!! Validation warnings:")
-        for p in problems:
+    # Validate-before-write: commit_round refuses an invalid round outright, so a
+    # mis-entry can't land on disk (unlike the old write-then-warn flow).
+    try:
+        round_id = gdata.commit_round(shot_rows, {
+            "date": date, "ground": ground, "wind": wind,
+            "client_round_id": client_round_id, "notes": notes})
+    except gdata.RoundRejected as rej:
+        print("\n!! Round REJECTED — nothing was saved. Problems:")
+        for p in rej.problems:
             print(f"  - {p}")
-    else:
-        print("Validation: clean.")
+        print("Fix the entries and log the round again.")
+        sys.exit(1)
+
+    print(f"\nSaved round {round_id} ({len(shot_rows)} shots). Validation: clean.")
 
 
 if __name__ == "__main__":

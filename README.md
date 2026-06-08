@@ -21,6 +21,7 @@ course** — the code doesn't care whose holes they are.
 | 📱 **A tap-to-log web app** | One HTML file. Open it on your phone, play a round, tap what each shot did. No app store, works offline. |
 | 📊 **A clean data pipeline** | Every shot is one row in a CSV. Team scores are *derived*, never hand-entered, so the numbers can't drift. |
 | 🤖 **Four ML models** | Predict team score, win probability, hole difficulty, and individual shot outcomes. |
+| 💬 **A stats caddie** | A separate little chat app — ask plain-English questions ("which hole is hardest?") and a local server answers from the data. It never makes numbers up. |
 | 🗺️ **A real course** | Six holes with start/target landmarks, generous pars, and safety routing so balls stay out of the neighbors' yards. |
 
 ---
@@ -138,14 +139,24 @@ truth — one row per player per stroke. Everything else (team scores, win/loss)
 data/
   course.yaml   # the 6 holes: par, start/target, dogleg, blind, map
   players.csv   # roster
-  rounds.csv    # one row per game (date, who played)
+  rounds.csv    # one row per game (date, who played, conditions)
   shots.csv     # one row per player per stroke   ← source of truth
 ```
 
 Each shot records `stroke_num` (the team's stroke index), `shot_order` (who hit
-first), `outcome`, `best_ball` (was this ball kept?), and `mulligan` (a scrapped
-do-over). The outcome vocabulary and the full "scramble invariant" that every
+first), `outcome`, `distance` (how far the team was from the target on that
+stroke — `tee`/`long`/`mid`/`short`/`tap_in`, the bit that makes a shot *easy or
+hard*), `best_ball` (was this ball kept?), `mulligan` (a scrapped do-over), and a
+`ts` timestamp. Each round also captures optional `ground` (dry/wet) and `wind`
+conditions. The outcome vocabulary and the full "scramble invariant" that every
 scoring rule follows from live in [`golf/schema.py`](golf/schema.py).
+
+**The pipeline guards your data.** Every round carries a stable `client_round_id`,
+so re-importing the same export can't create a duplicate. The importer also
+*validates a round before writing it* — a round that breaks the scramble
+invariant is quarantined to `data/quarantine/`, never appended to the CSVs. The
+invariant (and these guards) are covered by [`tests/`](tests/) — run
+`python -m pytest -q`.
 
 ---
 
@@ -173,6 +184,55 @@ iterate without touching the data layer.
 
 ---
 
+## 💬 Ask the caddie (the stats chatbot)
+
+The **caddie** is a *separate* little app — a chat where you ask plain-English
+questions about the rounds you've logged and it answers: *"who's got the best
+make-rate?"*, *"which hole is hardest?"*, *"who's more likely to make a tap-in?"*.
+
+> **Two apps, on purpose.** The **logger** ([`webapp/index.html`](webapp/index.html))
+> is the offline phone app you tap rounds into — it never needs a server. The
+> **caddie** ([`webapp/caddie.html`](webapp/caddie.html)) is this chat. They're kept
+> separate so the logger stays dead-simple and works anywhere.
+
+It's built **brain + mouth**: the **brain** ([`golf/stats.py`](golf/stats.py))
+computes every number from `shots.csv` (make-rates with small-sample smoothing, so
+a 1-for-1 doesn't read as a bragging 100%); the **mouth** (Google Gemini) only
+*narrates* what the brain returns via tool-calling — it can't invent a stat. Thin
+data is flagged, so the caddie hedges honestly ("…but that's only 2 rounds").
+
+The caddie needs a tiny **local server** on your laptop (to hold the API key and
+read the data); your phone reaches it over the same wifi.
+
+**One-time setup**
+
+```bash
+pip install -r requirements.txt        # adds fastapi, google-genai, qrcode, etc.
+copy .env.example .env                 # Windows  (cp on macOS/Linux)
+# paste your Gemini key into .env — free key at https://aistudio.google.com/apikey
+```
+
+**Run it — just double-click `Caddie.bat`** (or the **Rzeznik Caddie** desktop
+shortcut). It starts the server and pops open a **launch page** with a **QR code**:
+
+- 💻 **On the laptop:** click **"Open the caddie here →"**.
+- 📱 **On your phone:** point your camera at the **QR code** — the caddie opens
+  right up. (No typing IP addresses.)
+
+Closing the launcher window stops the caddie. *(Prefer the terminal? `python
+run_server.py` does the same thing.)*
+
+> **Phone won't connect?** It's almost always the **Windows Firewall** — the first
+> run pops a prompt; click **Allow access** (Private networks). Also make sure both
+> devices are on the *same* wifi (not a guest network), and the laptop isn't on a VPN.
+
+The caddie only knows **historical** data (the rounds you've imported with
+`import_log.py`), not a round you're currently logging. Costs are tiny — it uses a
+cheap Gemini Flash model (`gemini-2.5-flash`), only when you ask a question. Change
+it with `GEMINI_MODEL` in `.env`.
+
+---
+
 ## Make it your own
 
 This is built around one specific backyard, but nothing in the code is hardcoded to
@@ -194,6 +254,8 @@ issue or fork it.
 - [x] Phone web app for logging rounds (hole/par/stroke display, skip, undo, mulligan)
 - [x] Data schema, validation, and derived scorecards
 - [x] Feature tables for all four ML goals
+- [x] Stats caddie chatbot (brain in `golf/stats.py`, Gemini "mouth", local server)
+- [ ] Teach the caddie the *live* round, so it can answer "who should hit this shot?" mid-round
 - [ ] Add hole map images to `maps/` (hole 1 done — 5 to go)
 - [ ] Measure and fill in `yards` for each hole in `course.yaml`
 - [ ] Log enough real rounds to train baseline models

@@ -5,6 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#1b5e20">
 <title>Rzeznik Golf Tracker</title>
+<!-- EmailJS: lets the app auto-send the round straight from the browser. Loaded
+     async so the tracker still works offline; only the send button needs it. -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js" async></script>
 <style>
   :root { --green:#1b5e20; --green2:#2e7d32; --green3:#43a047; --bg:#0c120c; --card:#161d16; --card2:#1d261c;
           --line:#33402f; --txt:#e8f0e2; --muted:#9bb08c; --gold:#e8c98c; --accent:#7bd389; }
@@ -144,17 +147,49 @@ const OUTCOMES = [
 ];
 const LABEL = Object.fromEntries(OUTCOMES.map(o => [o.k, o.label]));
 LABEL.skip = "Skipped";   // a player who sat out this stroke (not a real attempt)
+// Distance to the target from the shared spot the whole stroke shoots from.
+// Stroke 1 is auto "tee"; later strokes pick one of these. `k` matches schema.DISTANCES.
+const DISTANCES = [
+  {k:"long",   label:"Long"},
+  {k:"mid",    label:"Mid"},
+  {k:"short",  label:"Short"},
+  {k:"tap_in", label:"Tap-in"},
+];
+const DLABEL = {tee:"Tee", long:"Long", mid:"Mid", short:"Short", tap_in:"Tap-in"};
+const GROUNDS = [{k:"dry",label:"Dry"},{k:"wet",label:"Wet"}];
+const WINDS = [{k:"calm",label:"Calm"},{k:"breezy",label:"Breezy"},{k:"windy",label:"Windy"}];
+const SCHEMA_VERSION = 2;     // keep in sync with golf/schema.py
 const EMAIL = "trzeznik29@gmail.com";
-const KEY = "rzeznik_round_v2";
+// --- EmailJS auto-send config -------------------------------------------------
+// Fill these from your EmailJS dashboard (https://dashboard.emailjs.com):
+//   publicKey  -> Account → General → Public Key
+//   serviceId  -> Email Services → (your Gmail service) → Service ID
+//   templateId -> Email Templates → (your template) → Template ID
+// The template needs these variables: {{subject}}, {{round_date}}, {{team_total}},
+// {{round_json}}  (and set the template's "To" field to {{to_email}}).
+// Until all three are filled, the Send button falls back to opening your mail app.
+const EMAILJS = {
+  publicKey:  "_spHeNzXj5ZhheEwo",
+  serviceId:  "service_k9astb7",
+  templateId: "template_mcelcxq",
+};
+const EMAILJS_READY = !/YOUR_/.test(EMAILJS.publicKey + EMAILJS.serviceId + EMAILJS.templateId);
+const KEY = "rzeznik_round_v3";   // bumped: round state now carries distance/conditions
 const HOLES = COURSE.holes.length;
+function uuid(){ return (crypto.randomUUID ? crypto.randomUUID()
+  : 'r-'+Date.now()+'-'+Math.random().toString(16).slice(2)); }
 
 // ---- State ---------------------------------------------------------------
 let S = load() || newRound();
 function newRound() {
-  const today = new Date().toISOString().slice(0,10);
-  return { date:today, notes:"", roster:JSON.parse(JSON.stringify(ROSTER)), active:[1],
+  // Local date (not UTC) so a round logged near midnight gets the right day.
+  const n = new Date();
+  const today = new Date(n.getTime() - n.getTimezoneOffset()*60000).toISOString().slice(0,10);
+  return { date:today, notes:"", ground:"", wind:"",
+           client_round_id:uuid(), schema_version:SCHEMA_VERSION,
+           roster:JSON.parse(JSON.stringify(ROSTER)), active:[1],
            shots:[], started:false, finished:false,
-           hole:1, strokeNum:1, order:[], turnIdx:0, phase:"shooting",
+           hole:1, strokeNum:1, dist:"tee", order:[], turnIdx:0, phase:"shooting",
            strokeOutcomes:{}, mulliganUsed:false, pendMull:false };
 }
 function save() { localStorage.setItem(KEY, JSON.stringify(S)); }
@@ -193,12 +228,28 @@ function renderSetup() {
         <input id="newp" placeholder="add a player by name">
         <button class="btn sm" onclick="addPlayer()">+ Add</button>
       </div>
+      <label>Conditions (optional)</label>
+      <div id="conds"></div>
       <label>Round notes (optional)</label>
       <textarea id="notes" rows="2">${S.notes||""}</textarea>
       <button class="btn primary wide" onclick="startRound()">Start round →</button>
     </div>`;
   renderPlayers();
+  renderConditions();
 }
+function renderConditions(){
+  const box = document.getElementById("conds");
+  if(!box) return;
+  const row = (opts, cur, fn) => `<div class="grid" style="grid-template-columns:repeat(${opts.length},1fr);margin-bottom:8px">`
+    + opts.map(o=>`<div class="chip ${cur===o.k?'on':''}" onclick="${fn}('${o.k}')">${o.label}</div>`).join("") + `</div>`;
+  box.innerHTML = `<div class="muted" style="margin-bottom:4px">Ground</div>`
+    + row(GROUNDS, S.ground, "setGround")
+    + `<div class="muted" style="margin-bottom:4px">Wind</div>`
+    + row(WINDS, S.wind, "setWind");
+}
+// Tapping the active chip again clears it (conditions stay optional).
+function setGround(k){ S.ground = S.ground===k ? "" : k; save(); renderConditions(); }
+function setWind(k){ S.wind = S.wind===k ? "" : k; save(); renderConditions(); }
 // Just the player list, so toggling doesn't wipe the date/notes you typed.
 function renderPlayers(){
   const box = document.getElementById("players");
@@ -236,16 +287,22 @@ function startRound(){
 // ---- Game flow -----------------------------------------------------------
 function startHole(){
   S.strokeNum = 1;
+  S.dist = "tee";                       // stroke 1 is always the tee
   S.order = shuffle(S.active);          // random starter each hole
   S.turnIdx = 0; S.phase = "shooting"; S.strokeOutcomes = {}; S.pendMull = false;
   render();
 }
 function nextStroke(leader){
-  if(leader != null) S.order = [leader, ...S.active.filter(p=>p!==leader)];
-  // all-OB keeps the same order/starter
-  S.strokeNum++; S.turnIdx = 0; S.phase = "shooting"; S.strokeOutcomes = {}; S.pendMull = false;
+  if(leader != null){                   // advanced to a new spot -> ask its distance
+    S.order = [leader, ...S.active.filter(p=>p!==leader)];
+    S.dist = null;
+  }
+  // all-OB keeps the same order/starter AND the same spot (distance unchanged)
+  S.strokeNum++; S.turnIdx = 0; S.strokeOutcomes = {}; S.pendMull = false;
+  S.phase = (leader != null) ? "distance" : "shooting";
   render();
 }
+function pickDistance(k){ S.dist = k; S.phase = "shooting"; render(); }
 function endHole(){
   if(S.hole < HOLES){ S.hole++; startHole(); }
   else { S.finished = true; render(); }
@@ -255,7 +312,8 @@ function logOutcome(k){
   const shot_order = S.turnIdx + 1;
   if(S.pendMull){
     S.shots.push({ player_id:pid, hole:S.hole, stroke_num:S.strokeNum,
-                   shot_order, outcome:k, best_ball:false, mulligan:true });
+                   shot_order, outcome:k, distance:S.dist, best_ball:false,
+                   mulligan:true, ts:Date.now() });
     S.mulliganUsed = true; S.pendMull = false;
     render(); return;                   // same player re-takes the shot
   }
@@ -265,9 +323,11 @@ function logOutcome(k){
   resolveStroke();
 }
 function commitStroke(bestSet){
+  const ts = Date.now();
   S.order.forEach((pid, i) => {
     S.shots.push({ player_id:pid, hole:S.hole, stroke_num:S.strokeNum, shot_order:i+1,
-                   outcome:S.strokeOutcomes[pid], best_ball:bestSet.has(pid), mulligan:false });
+                   outcome:S.strokeOutcomes[pid], distance:S.dist,
+                   best_ball:bestSet.has(pid), mulligan:false, ts });
   });
 }
 function playableSet(){ // balls eligible to be kept: not OB, not skipped
@@ -285,6 +345,8 @@ function pickBest(pid){ commitStroke(new Set([pid])); nextStroke(pid); }
 
 function undo(){
   if(S.pendMull){ S.pendMull=false; render(); return; }
+  // At the distance prompt (start of a fresh stroke) -> undo the previous commit.
+  if(S.phase==="distance"){ popLastStroke(); return; }
   if(S.phase==="pickbest"){ S.phase="shooting"; S.turnIdx=S.order.length-1;
     delete S.strokeOutcomes[S.order[S.turnIdx]]; render(); return; }
   if(S.turnIdx>0){ S.turnIdx--; delete S.strokeOutcomes[S.order[S.turnIdx]]; render(); return; }
@@ -300,6 +362,7 @@ function popLastStroke(){
   // rebuild that stroke's order from the removed real shots' shot_order
   const real = removed.filter(x=>!x.mulligan).sort((a,b)=>a.shot_order-b.shot_order);
   S.order = real.length ? real.map(x=>x.player_id) : S.order;
+  S.dist = real.length ? real[0].distance : (prev===1 ? "tee" : S.dist);
   S.strokeNum = prev; S.turnIdx = 0; S.phase = "shooting"; S.strokeOutcomes = {}; S.pendMull = false;
   render();
 }
@@ -357,7 +420,20 @@ function renderPlay(){
   }).join("");
 
   let body;
-  if(S.phase==="pickbest"){
+  if(S.phase==="distance"){
+    // Picking the shared spot's distance to target (one tap per stroke).
+    const editing = S.turnIdx>0 || Object.keys(S.strokeOutcomes).length>0;
+    const footer = editing
+      ? `<button class="btn sm wide" onclick="pickDistance('${S.dist}')">Cancel</button>`
+      : `<button class="btn sm wide" onclick="undo()">↶ Undo last shot</button>`;
+    body = `
+      <div class="turn">How far to the target?</div>
+      <div class="muted">Stroke ${S.strokeNum} · where's the team shooting from?</div>
+      <div class="grid" style="margin-top:12px">
+        ${DISTANCES.map(d=>`<div class="chip outcome" onclick="pickDistance('${d.k}')">${d.label}</div>`).join("")}
+      </div>
+      ${footer}`;
+  } else if(S.phase==="pickbest"){
     const cands = playableSet();
     body = `
       <div class="turn">Who had the best ball?</div>
@@ -369,7 +445,10 @@ function renderPlay(){
   } else {
     body = `
       <div class="turn"><span class="who">${nm(pid)}</span>'s shot</div>
-      <div class="fromspot">Stroke ${S.strokeNum} · playing from ${spot}</div>
+      <div class="fromspot">Stroke ${S.strokeNum} · playing from ${spot} · ${
+        S.strokeNum===1 ? `<span class="pill">Tee</span>`
+        : `<span class="pill" style="cursor:pointer;border-color:var(--accent)" onclick="editDistance()">${DLABEL[S.dist]||'?'} ✎</span>`
+      }</div>
       <div>${pills}</div>
       <div class="grid" style="margin-top:12px">
         ${OUTCOMES.map(o=>`<div class="chip outcome ${o.k==='hole'?'hole':''}" onclick="logOutcome('${o.k}')">${o.label}</div>`).join("")}
@@ -386,9 +465,12 @@ function renderPlay(){
     ${heroHTML(h)}
     <div class="card">
       ${body}
-    </div>`;
+    </div>
+    <button class="btn sm wide" style="opacity:.55;margin-top:4px"
+      onclick="if(confirm('Start a new round? This clears the current one — export it first if you want to keep it. Use this to get back to setup and add players.')){localStorage.removeItem(KEY);S=newRound();render();}">⟳ New round / edit players</button>`;
 }
 function toggleMull(){ if(S.mulliganUsed&&!S.pendMull) return; S.pendMull=!S.pendMull; render(); }
+function editDistance(){ S.phase="distance"; render(); }   // re-pick this stroke's distance
 
 function renderFinish(){
   const payload = JSON.stringify(exportData(), null, 0);
@@ -403,16 +485,18 @@ function renderFinish(){
       <h2>Round complete</h2>
       <div class="holeinfo">Team total: <b>${t}</b> vs target ${COURSE.target}
         — ${t<COURSE.target?'🏆 WIN':'no win'}.<br>${contrib}</div>
-      <button class="btn primary wide" onclick="emailIt()">📧 Email this round to me</button>
-      <button class="btn wide" onclick="shareIt()">📤 Share / save round</button>
-      <button class="btn wide" onclick="copyIt()">📋 Copy round data</button>
+      <button class="btn primary wide" id="sendBtn" onclick="autoSendIt()">✅ Send round</button>
+      <div id="sendStatus" class="holeinfo" style="display:none"></div>
+      <button class="btn wide" onclick="copyIt()">📋 Copy round data (fallback)</button>
       <label>Round data (import with scripts/import_log.py)</label>
       <textarea id="payload" readonly>${payload}</textarea>
       <button class="btn sm wide" onclick="if(confirm('Clear this round and start fresh?')){localStorage.removeItem(KEY);S=newRound();render();}">🗑 Clear & new round</button>
     </div>`;
 }
 function exportData(){
-  return { course:COURSE.name, date:S.date, notes:S.notes,
+  return { course:COURSE.name, schema_version:SCHEMA_VERSION,
+           client_round_id:S.client_round_id, date:S.date,
+           ground:S.ground||"", wind:S.wind||"", notes:S.notes,
            players:S.active.map(id=>S.roster.find(p=>p.player_id===id)),
            shots:S.shots };
 }
@@ -420,6 +504,44 @@ function payloadStr(){ return JSON.stringify(exportData()); }
 function emailIt(){
   const body = encodeURIComponent("Round data (JSON):\n\n"+payloadStr());
   location.href = `mailto:${EMAIL}?subject=${encodeURIComponent('Golf round '+S.date)}&body=${body}`;
+}
+function setSendStatus(msg, ok){
+  const el = document.getElementById("sendStatus");
+  if(!el) return;
+  el.style.display = "block";
+  el.style.color = ok===false ? "#ff9b9b" : ok===true ? "var(--accent)" : "var(--muted)";
+  el.textContent = msg;
+}
+// Init the EmailJS SDK lazily — it's loaded async and may not be ready at startup.
+// Returns false if the keys aren't configured or the SDK/network isn't available.
+function ensureEmailjs(){
+  if(!EMAILJS_READY || !window.emailjs) return false;
+  if(!ensureEmailjs._done){ emailjs.init({ publicKey: EMAILJS.publicKey }); ensureEmailjs._done = true; }
+  return true;
+}
+function autoSendIt(){
+  if(!ensureEmailjs()){
+    // Not configured yet (or offline / SDK blocked) — open the mail app instead.
+    setSendStatus("Auto-send isn't set up — opening your mail app instead.", false);
+    emailIt();
+    return;
+  }
+  const btn = document.getElementById("sendBtn");
+  if(btn) btn.disabled = true;
+  setSendStatus("Sending…");
+  emailjs.send(EMAILJS.serviceId, EMAILJS.templateId, {
+    to_email:   EMAIL,
+    subject:    "Golf round "+S.date,
+    round_date: S.date,
+    team_total: teamTotal(),
+    round_json: payloadStr(),
+  }).then(()=>{
+    setSendStatus("✅ Round sent! You can close the app.", true);
+  }).catch(err=>{
+    if(btn) btn.disabled = false;
+    const detail = (err && (err.text || err.message)) || err;
+    setSendStatus("Couldn't auto-send ("+detail+"). Use “Copy round data” below.", false);
+  });
 }
 async function shareIt(){
   if(navigator.share){ try{ await navigator.share({title:"Golf round "+S.date, text:payloadStr()}); }catch(e){} }
