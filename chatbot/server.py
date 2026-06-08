@@ -21,12 +21,15 @@ from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import launch
 
 ROOT = Path(__file__).resolve().parent.parent
-CADDIE_FILE = ROOT / "webapp" / "caddie.html"
+WEBAPP_DIR = ROOT / "webapp"
+CADDIE_FILE = WEBAPP_DIR / "caddie.html"
+STATS_FILE = WEBAPP_DIR / "stats.html"
 PORT = int(os.environ.get("CHATBOT_PORT", "8000"))
 
 log = logging.getLogger("caddie")
@@ -38,6 +41,19 @@ app = FastAPI(title="Rzeznik Golf Course — stats caddie")
 def home():
     """The caddie chat app itself (phone QR points here)."""
     return FileResponse(CADDIE_FILE)
+
+
+@app.get("/stats", response_class=HTMLResponse)
+def stats_page():
+    """The stats dashboard page (no chatbot) — draws what /api/stats returns."""
+    return FileResponse(STATS_FILE)
+
+
+# Vendored front-end libraries (Chart.js) — served locally so the dashboard works
+# offline. Narrow prefix, so it can't shadow the API or pages.
+app.mount("/vendor", StaticFiles(directory=str(WEBAPP_DIR / "vendor")), name="vendor")
+# Hole map images, used by the stats dashboard's per-hole headers.
+app.mount("/maps", StaticFiles(directory=str(ROOT / "maps")), name="maps")
 
 
 @app.get("/launch", response_class=HTMLResponse)
@@ -60,6 +76,13 @@ class ChatRequest(BaseModel):
 def healthz():
     """Quick reachability check — open this on the phone to confirm it connects."""
     return {"ok": True}
+
+
+@app.get("/api/stats")
+def stats():
+    """The whole stats dashboard as one JSON blob (no LLM). The /stats page draws it."""
+    from golf import dashboard
+    return dashboard.payload()
 
 
 @app.post("/api/chat")

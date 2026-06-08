@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="theme-color" content="#1b5e20">
+<title>Rzeznik Stats</title>
+<!--
+  The stats dashboard — a separate page from the chat caddie, no LLM involved.
+  It fetches /api/stats once (computed server-side by golf/dashboard.py, the same
+  brain the caddie uses) and draws it. Slice #10: the Overall tab's cards. Later
+  slices add the tab strip (holes 1-6) and Chart.js graphs.
+-->
+<style>
+  :root { --green:#1b5e20; --green2:#2e7d32; --green3:#43a047; --bg:#0c120c; --card:#161d16; --card2:#1d261c;
+          --line:#33402f; --txt:#e8f0e2; --muted:#9bb08c; --gold:#e8c98c; --accent:#7bd389; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  body { margin:0; font-family:-apple-system,system-ui,sans-serif; background:var(--bg); color:var(--txt);
+         font-size:17px; padding-bottom:34px; }
+  header { background:linear-gradient(180deg,var(--green) 0%,#164a1a 100%); padding:11px 14px;
+           position:sticky; top:0; z-index:10; box-shadow:0 2px 12px rgba(0,0,0,.4); }
+  header .inner { max-width:560px; margin:0 auto; display:flex; align-items:center; gap:11px; }
+  header .badge { width:38px; height:38px; border-radius:50%; flex:0 0 auto;
+          background:radial-gradient(circle at 32% 27%,var(--green3),var(--green) 80%);
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.28),0 2px 8px rgba(0,0,0,.4);
+          display:flex; align-items:center; justify-content:center; font-size:19px; }
+  header h1 { font-size:17px; margin:0; letter-spacing:.3px; line-height:1.1; }
+  header .sub { font-size:12px; color:#cfe8c4; margin-top:1px; }
+  header .ask { margin-left:auto; background:rgba(0,0,0,.2); border:1px solid rgba(255,255,255,.14);
+          color:#eafff0; font-size:13px; padding:8px 12px; border-radius:10px; cursor:pointer;
+          text-decoration:none; white-space:nowrap; }
+  .wrap { max-width:560px; margin:0 auto; padding:16px 14px; }
+
+  /* tab strip */
+  .tabstrip { position:sticky; top:61px; z-index:9; background:rgba(12,18,12,.96);
+          backdrop-filter:blur(6px); border-bottom:1px solid var(--line);
+          display:flex; gap:6px; padding:9px 14px; overflow-x:auto; -webkit-overflow-scrolling:touch;
+          scrollbar-width:none; }
+  .tabstrip::-webkit-scrollbar { display:none; }
+  .tabstrip .tab { flex:0 0 auto; min-width:38px; padding:8px 13px; border-radius:10px;
+          border:1px solid var(--line); background:#161d16; color:var(--muted); font-size:14px;
+          font-weight:700; cursor:pointer; white-space:nowrap; }
+  .tabstrip .tab.on { background:var(--green2); border-color:var(--accent); color:#f3fbef; }
+  .tabstrip .tab:active { transform:scale(.96); }
+
+  /* hole header */
+  .holehead { background:linear-gradient(165deg,#1f2a1d,#141c13); border:1px solid var(--line);
+          border-radius:18px; padding:16px; margin-bottom:14px; }
+  .holehead .top { display:flex; align-items:center; gap:13px; }
+  .holehead .badge2 { width:60px; height:60px; border-radius:16px; flex:0 0 auto; color:#fff;
+          background:radial-gradient(circle at 30% 25%,var(--green3),var(--green) 78%);
+          box-shadow:inset 0 1px 0 rgba(255,255,255,.25),0 4px 14px rgba(0,0,0,.35);
+          display:flex; flex-direction:column; align-items:center; justify-content:center; }
+  .holehead .badge2 .num { font-size:28px; font-weight:800; line-height:1; }
+  .holehead .badge2 .lbl { font-size:9px; letter-spacing:2px; text-transform:uppercase; opacity:.85; }
+  .holehead .par { font-size:14px; font-weight:700; color:var(--gold); background:rgba(232,201,140,.12);
+          border:1px solid rgba(232,201,140,.4); padding:3px 11px; border-radius:999px; }
+  .holehead .route { color:#cfe8c4; font-size:13.5px; margin-top:7px; line-height:1.4; }
+  .holehead .route .arrow { color:var(--accent); font-weight:700; padding:0 5px; }
+  .holehead .note { font-size:13px; color:var(--gold); margin-top:5px; }
+  .holemap { width:100%; border-radius:12px; margin-top:13px; border:1px solid var(--line); display:block; }
+
+  h2 { font-size:13px; margin:2px 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px; }
+
+  /* hero: best round */
+  .hero { background:linear-gradient(165deg,#1f2a1d 0%,#141c13 100%); border:1px solid var(--line);
+          border-radius:18px; padding:18px; margin-bottom:14px; }
+  .hero .lbl { font-size:11px; letter-spacing:2px; text-transform:uppercase; color:var(--gold); }
+  .hero .big { font-size:40px; font-weight:800; line-height:1; margin:8px 0 2px; color:#fff; }
+  .hero .big small { font-size:16px; font-weight:600; color:var(--muted); letter-spacing:.2px; }
+  .hero .meta { font-size:13px; color:#cfe8c4; margin-top:6px; }
+  .hero .tag { display:inline-block; margin-left:8px; padding:2px 9px; border-radius:999px; font-size:12px;
+          font-weight:700; }
+  .tag.win { color:var(--accent); background:rgba(123,211,137,.14); border:1px solid rgba(123,211,137,.4); }
+  .tag.no  { color:var(--muted); background:#222a20; border:1px solid var(--line); }
+
+  /* stat-card grid */
+  .grid { display:grid; grid-template-columns:repeat(2,1fr); gap:10px; margin-bottom:14px; }
+  .stat { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:13px 14px; }
+  .stat .k { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.4px; }
+  .stat .v { font-size:26px; font-weight:800; color:var(--txt); margin-top:3px; line-height:1.1; }
+  .stat .v small { font-size:13px; font-weight:600; color:var(--muted); }
+  .stat .n { font-size:11.5px; color:var(--muted); margin-top:3px; }
+
+  /* players row */
+  .players { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:13px 14px; }
+  .pchip { display:flex; align-items:center; justify-content:space-between; padding:9px 0;
+          border-bottom:1px solid var(--line); }
+  .pchip:last-child { border-bottom:none; }
+  .pchip .name { font-weight:700; }
+  .pchip .rate { font-weight:800; color:var(--accent); font-variant-numeric:tabular-nums; }
+  .pchip .rate small { color:var(--muted); font-weight:600; font-size:12px; margin-left:6px; }
+  .bar { height:6px; border-radius:3px; background:#2a3525; margin-top:5px; overflow:hidden; }
+  .bar > span { display:block; height:100%; background:linear-gradient(90deg,var(--green3),var(--accent)); }
+
+  /* charts */
+  .chartcard { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:13px 14px 8px; margin-bottom:12px; }
+  .chartcard h2 { margin:0 0 8px; }
+  .canvaswrap { position:relative; height:220px; }
+  .nodata { height:140px; display:flex; align-items:center; justify-content:center; text-align:center;
+          color:var(--muted); font-size:13.5px; border:1px dashed var(--line); border-radius:12px; }
+
+  .empty { text-align:center; padding:48px 10px; color:var(--muted); }
+  .empty .flag { font-size:40px; filter:drop-shadow(0 4px 10px rgba(0,0,0,.45)); }
+  .empty h3 { color:var(--txt); margin:12px 0 6px; font-size:19px; }
+  .loading { text-align:center; color:var(--muted); padding:48px 10px; }
+</style>
+<script src="/vendor/chart.umd.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="inner">
+    <div class="badge">📊</div>
+    <div>
+      <h1>Rzeznik Stats</h1>
+      <div class="sub">the numbers, no chit-chat</div>
+    </div>
+    <a class="ask" href="/">← Ask the caddie</a>
+  </div>
+</header>
+<nav class="tabstrip" id="tabs" style="display:none"></nav>
+<div class="wrap" id="app"><div class="loading">Loading stats…</div></div>
+
+<script>
+const app = document.getElementById("app");
+const tabsEl = document.getElementById("tabs");
+let DATA = null, TAB = "overall";
+
+function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function pct(x){ return x == null ? "—" : Math.round(x * 100) + "%"; }
+function signed(x){ return x == null ? "—" : (x > 0 ? "+" + x : "" + x); }
+function rounds(n){ return n === 1 ? "1 round" : n + " rounds"; }
+
+async function load(){
+  try {
+    const r = await fetch("/api/stats");
+    DATA = await r.json();
+  } catch(e) {
+    app.innerHTML = `<div class="empty"><div class="flag">📡</div><h3>Can't reach the stats</h3>
+      <p>Make sure the caddie server is running on this machine.</p></div>`;
+    return;
+  }
+  renderTabs();
+  render();
+}
+
+// Tab strip: Overall + one tab per hole. All data is already loaded, so
+// switching tabs just re-renders — no refetch.
+function renderTabs(){
+  const tabs = [{id:"overall", label:"Overall"}]
+    .concat(DATA.holes.map(h => ({id:"h" + h.hole, label:String(h.hole)})));
+  tabsEl.innerHTML = tabs.map(t =>
+    `<button class="tab ${t.id === TAB ? "on" : ""}" onclick="setTab('${t.id}')">${esc(t.label)}</button>`
+  ).join("");
+  tabsEl.style.display = "flex";
+}
+function setTab(t){ TAB = t; renderTabs(); render(); window.scrollTo(0, 0); }
+function render(){
+  if(!DATA) return;
+  if(TAB === "overall") return renderOverall(DATA.overall);
+  renderHole(DATA.holes.find(h => "h" + h.hole === TAB));
+}
+
+// Per-player make-rate list, shared by the Overall and Hole tabs.
+function playersBlock(players, title){
+  if(!players || !players.length) return "";
+  const top = Math.max(...players.map(p => p.make_rate));
+  return `<h2>${esc(title)}</h2><div class="players">` + players.map(p => `
+      <div class="pchip"><span class="name">${esc(p.name)}</span>
+        <span class="rate">${pct(p.make_rate)}<small>${p.n} shots</small></span></div>
+      <div class="bar"><span style="width:${Math.round(p.make_rate / top * 100)}%"></span></div>`
+  ).join("") + `</div>`;
+}
+
+function renderOverall(o){
+  if(!o || o.rounds_played === 0){
+    app.innerHTML = `<div class="empty"><div class="flag">⛳</div>
+      <h3>No rounds yet</h3>
+      <p>Log a round on the tracker and import it, then your stats will show up here.</p></div>`;
+    return;
+  }
+  const n = o.rounds_played;
+  const nlabel = rounds(n);
+
+  // Best round hero
+  const b = o.best_round;
+  const heroTag = b.won ? `<span class="tag win">🏆 win</span>` : `<span class="tag no">no win</span>`;
+  const hero = b ? `
+    <div class="hero">
+      <div class="lbl">Best round</div>
+      <div class="big">${b.team_total}<small> strokes · ${signed(b.to_par)} to par</small></div>
+      <div class="meta">${esc(b.date)} ${heroTag}</div>
+    </div>` : "";
+
+  // Stat cards
+  const rec = o.record;
+  const cards = `
+    <div class="grid">
+      <div class="stat"><div class="k">Rounds played</div><div class="v">${n}</div>
+        <div class="n">${esc(o.date_range.first)} → ${esc(o.date_range.last)}</div></div>
+      <div class="stat"><div class="k">Record vs target</div>
+        <div class="v">${rec.wins}<small>–${rec.losses}</small></div>
+        <div class="n">${pct(rec.win_pct)} win rate</div></div>
+      <div class="stat"><div class="k">Avg team total</div>
+        <div class="v">${o.avg_team_total}</div><div class="n">target 20 · ${nlabel}</div></div>
+      <div class="stat"><div class="k">Avg to par</div>
+        <div class="v">${signed(o.avg_to_par)}</div><div class="n">per round · ${nlabel}</div></div>
+    </div>`;
+
+  // Per-player make-rates
+  const players = playersBlock(o.players, "Make-rate by player");
+
+  // Chart cards — draw if there's data, else a friendly placeholder.
+  const NO = "Not enough data yet — log a few rounds.";
+  const charts = `<h2>Trends</h2>`
+    + (o.score_series.length ? card("cScore", "Team score per round") : nodata("Team score per round", NO))
+    + (o.hole_difficulty.length ? card("cHoles", "Average to-par by hole") : nodata("Average to-par by hole", NO))
+    + (o.players.length ? card("cPlayers", "Make-rate by player") : nodata("Make-rate by player", NO))
+    + (o.outcome_mix.length ? card("cMix", "Shot-outcome mix") : nodata("Shot-outcome mix", NO));
+
+  app.innerHTML = hero + `<h2>Overall</h2>` + cards + players + charts;
+  drawCharts(o);
+}
+
+function renderHole(h){
+  if(!h){ app.innerHTML = `<div class="empty"><div class="flag">⛳</div><h3>No such hole</h3></div>`; return; }
+  const map = h.map ? `<img class="holemap" src="/${esc(h.map)}" alt="Map of hole ${h.hole}">` : "";
+  const note = h.notes ? `<div class="note">⚠ ${esc(h.notes)}</div>` : "";
+  const header = `
+    <div class="holehead">
+      <div class="top">
+        <div class="badge2"><span class="num">${h.hole}</span><span class="lbl">Hole</span></div>
+        <div>
+          <span class="par">PAR ${h.par}</span>
+          <div class="route">${esc(h.start)}<span class="arrow">→</span>${esc(h.target)}</div>
+          ${note}
+        </div>
+      </div>
+      ${map}
+    </div>`;
+
+  if(!h.times_played){
+    app.innerHTML = header + `<div class="empty" style="padding:28px 10px">
+      <div class="flag">📭</div><h3>Not played yet</h3>
+      <p>Log a round that includes hole ${h.hole} and its stats will show up here.</p></div>`;
+    return;
+  }
+
+  const cards = `
+    <div class="grid">
+      <div class="stat"><div class="k">Avg strokes</div>
+        <div class="v">${h.avg_strokes}<small> · ${signed(h.avg_to_par)} to par</small></div>
+        <div class="n">par ${h.par} · ${rounds(h.times_played)}</div></div>
+      <div class="stat"><div class="k">Difficulty</div>
+        <div class="v">#${h.difficulty_rank || "—"}</div><div class="n">hardest of 6</div></div>
+      <div class="stat"><div class="k">Best / worst</div>
+        <div class="v">${h.best}<small> / ${h.worst}</small></div><div class="n">strokes</div></div>
+      <div class="stat"><div class="k">Times played</div>
+        <div class="v">${h.times_played}</div><div class="n">rounds</div></div>
+    </div>`;
+  const players = playersBlock(h.players, "Make-rate on this hole");
+
+  const NO = "Not enough data yet — log a few rounds.";
+  const charts = `<h2>Trends</h2>`
+    + (h.score_series.length ? card("cHScore", "Strokes over time") : nodata("Strokes over time", NO))
+    + (h.distribution.length ? card("cHDist", "Score distribution") : nodata("Score distribution", NO))
+    + (h.outcome_mix.length ? card("cHMix", "Shot-outcome mix") : nodata("Shot-outcome mix", NO));
+
+  app.innerHTML = header + `<h2>Hole ${h.hole}</h2>` + cards + players + charts;
+  drawHoleCharts(h);
+}
+
+function drawHoleCharts(h){
+  if(typeof Chart === "undefined") return;
+  themeCharts(); clearCharts();
+  const at = id => document.getElementById(id);
+
+  if(at("cHScore")){
+    new Chart(at("cHScore"), { type:"line",
+      data:{ labels:h.score_series.map(p=>p.date), datasets:[
+        { label:"Team strokes", data:h.score_series.map(p=>p.team_strokes), borderColor:"#7bd389",
+          backgroundColor:"rgba(123,211,137,.15)", fill:true, tension:.25,
+          pointBackgroundColor:"#7bd389", pointRadius:4 },
+        { label:"Par", data:h.score_series.map(()=>h.par), borderColor:"#e8c98c",
+          borderDash:[6,6], pointRadius:0, fill:false } ]},
+      options: axes("strokes") });
+  }
+  if(at("cHDist")){
+    new Chart(at("cHDist"), { type:"bar",
+      data:{ labels:h.distribution.map(d=>d.strokes + " str"), datasets:[{ label:"Rounds",
+        data:h.distribution.map(d=>d.count), backgroundColor:"rgba(67,160,71,.85)", borderRadius:6 }]},
+      options: axes("rounds") });
+  }
+  if(at("cHMix")){
+    new Chart(at("cHMix"), { type:"doughnut",
+      data:{ labels:h.outcome_mix.map(m=>m.outcome), datasets:[{ data:h.outcome_mix.map(m=>m.count),
+        backgroundColor:h.outcome_mix.map(m=>OUTCOME_COLORS[m.outcome]||"#9bb08c"),
+        borderColor:"#161d16", borderWidth:2 }]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:"right" } } } });
+  }
+}
+
+function card(id, title){
+  return `<div class="chartcard"><h2>${title}</h2><div class="canvaswrap"><canvas id="${id}"></canvas></div></div>`;
+}
+function nodata(title, msg){
+  return `<div class="chartcard"><h2>${title}</h2><div class="nodata">${msg}</div></div>`;
+}
+
+// Theme Chart.js to the dark forest-green palette, once.
+function themeCharts(){
+  if(themeCharts.done) return;
+  Chart.defaults.color = "#9bb08c";
+  Chart.defaults.font.family = "-apple-system,system-ui,sans-serif";
+  Chart.defaults.plugins.legend.labels.color = "#e8f0e2";
+  Chart.defaults.plugins.legend.labels.boxWidth = 12;
+  Chart.defaults.plugins.legend.labels.usePointStyle = true;
+  themeCharts.done = true;
+}
+function axes(yTitle, yMax){
+  return { responsive:true, maintainAspectRatio:false,
+    scales:{ x:{ grid:{ color:"rgba(123,211,137,.06)" } },
+             y:{ grid:{ color:"rgba(123,211,137,.10)" }, suggestedMax:yMax,
+                 title:{ display:!!yTitle, text:yTitle||"", color:"#9bb08c" } } } };
+}
+const OUTCOME_COLORS = { ob:"#e88c8c", overshoot:"#e8b98c", grounder:"#d8c98c",
+                         short_pop:"#b9c98c", good:"#7bd389", hole:"#43a047", skip:"#6b7a63" };
+
+// Tear down charts from a previous render so switching tabs can't leak or reuse a canvas.
+function clearCharts(){
+  if(typeof Chart !== "undefined" && Chart.instances)
+    Object.values(Chart.instances).forEach(c => { try { c.destroy(); } catch(e){} });
+}
+
+function drawCharts(o){
+  if(typeof Chart === "undefined") return;   // vendored lib missing -> cards still show
+  themeCharts(); clearCharts();
+  const at = id => document.getElementById(id);
+
+  if(at("cScore")){
+    new Chart(at("cScore"), { type:"line",
+      data:{ labels:o.score_series.map(p=>p.date), datasets:[
+        { label:"Team total", data:o.score_series.map(p=>p.team_total), borderColor:"#7bd389",
+          backgroundColor:"rgba(123,211,137,.15)", fill:true, tension:.25,
+          pointBackgroundColor:"#7bd389", pointRadius:4 },
+        { label:"Target", data:o.score_series.map(()=>o.target), borderColor:"#e8c98c",
+          borderDash:[6,6], pointRadius:0, fill:false } ]},
+      options: axes("strokes") });
+  }
+  if(at("cHoles")){
+    const hd = [...o.hole_difficulty].sort((a,b)=>a.hole-b.hole);
+    new Chart(at("cHoles"), { type:"bar",
+      data:{ labels:hd.map(h=>"H"+h.hole), datasets:[{ label:"Avg to-par",
+        data:hd.map(h=>h.avg_to_par), borderRadius:6,
+        backgroundColor:hd.map(h=> h.avg_to_par>0 ? "rgba(232,161,140,.85)" : "rgba(123,211,137,.85)") }]},
+      options: axes("to par") });
+  }
+  if(at("cPlayers")){
+    new Chart(at("cPlayers"), { type:"bar",
+      data:{ labels:o.players.map(p=>p.name), datasets:[{ label:"Make-rate %",
+        data:o.players.map(p=>Math.round(p.make_rate*100)), borderRadius:6,
+        backgroundColor:"rgba(67,160,71,.85)" }]},
+      options: axes("%", 100) });
+  }
+  if(at("cMix")){
+    new Chart(at("cMix"), { type:"doughnut",
+      data:{ labels:o.outcome_mix.map(m=>m.outcome), datasets:[{ data:o.outcome_mix.map(m=>m.count),
+        backgroundColor:o.outcome_mix.map(m=>OUTCOME_COLORS[m.outcome]||"#9bb08c"),
+        borderColor:"#161d16", borderWidth:2 }]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:"right" } } } });
+  }
+}
+
+load();
+</script>
+</body>
+</html>
