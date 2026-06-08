@@ -36,6 +36,9 @@ SHOTS_FILE = DATA_DIR / "shots.csv"
 #     OB the team re-hits the same spot (that stroke still counts).
 #   * One mulligan per round for the group: mark the discarded shot mulligan=True
 #     (it shares its stroke_num with the do-over) and it won't count.
+# Bump when the payload/column layout changes so importers can adapt old exports.
+SCHEMA_VERSION = 2
+
 SHOT_COLUMNS = [
     "shot_id",     # globally unique, auto-assigned
     "round_id",
@@ -44,12 +47,20 @@ SHOT_COLUMNS = [
     "stroke_num",  # team stroke index (1..max); shared by all players in a stroke
     "shot_order",  # 1..n within the stroke; 1 = who hit first (starter / best-ball hitter)
     "outcome",     # one of OUTCOMES
+    "distance",    # one of DISTANCES; the spot the whole stroke shoots from (stroke-level,
+                   # denormalized onto every shot in the stroke). Stroke 1 is `tee` when
+                   # recorded. Optional/nullable: logs predating distance capture leave it
+                   # blank, and a blank stroke just isn't conditioned on distance.
     "best_ball",   # True if this ball was kept for the next stroke (auto on a hole)
     "mulligan",    # True if this shot was the discarded mulligan (doesn't count)
+    "ts",          # epoch milliseconds when the shot was logged (nullable; helps order
+                   # shots, detect hot streaks, and join conditions). Auto-captured.
 ]
 
 PLAYER_COLUMNS = ["player_id", "name", "hand", "notes"]
-ROUND_COLUMNS = ["round_id", "date", "players", "notes"]
+# `ground`/`wind` are optional round conditions; `client_round_id` is a stable id the
+# logger stamps on a round so re-importing the same export can't create a duplicate.
+ROUND_COLUMNS = ["round_id", "date", "players", "ground", "wind", "client_round_id", "notes"]
 
 # --- Controlled vocabularies ----------------------------------------------
 # Only one club is legal on the course, so there's no club vocabulary.
@@ -62,3 +73,14 @@ CLUB = "sand wedge"
 # skipped advances with no best ball (re-hit the same spot). It's excluded from
 # the shot-outcome model (see features.shot_outcome).
 OUTCOMES = ["skip", "ob", "overshoot", "grounder", "short_pop", "good", "hole"]
+
+# How far the team is from the target on the spot it's shooting from. A coarse
+# bucket (one tap to log) that gives every shot a *difficulty*, so "who makes this
+# shot" can condition on distance instead of just (hole, stroke). `tee` is the
+# automatic value for stroke 1; later strokes pick from the rest. Ordered far->near.
+DISTANCES = ["tee", "long", "mid", "short", "tap_in"]
+
+# Optional per-round conditions (blank = not recorded). Can't be backfilled, so
+# the logger offers them at round start.
+GROUND = ["dry", "wet"]
+WIND = ["calm", "breezy", "windy"]

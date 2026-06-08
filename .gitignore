@@ -16,6 +16,14 @@ models/*.joblib
 # Synthetic/sample data
 data/sample/
 
+# Secrets (LLM API key for the stats chatbot — never commit)
+.env
+
+# Agent skill tooling (managed by `npx skills`, kept local)
+.agents/
+.claude/
+skills-lock.json
+
 # OS
 .DS_Store
 Thumbs.db

@@ -106,4 +106,7 @@ def shot_outcome() -> pd.DataFrame:
         .merge(_round_n_players(), on="round_id", how="left")
     )
     feats["is_first"] = feats["shot_order"] == 1
-    return feats  # X = [player_id, hole, par, stroke_num, shot_order, n_players], y = outcome
+    # X = [player_id, hole, par, stroke_num, shot_order, distance, n_players], y = outcome
+    # `distance` (tee/long/mid/short/tap_in) is the spot's difficulty — the key
+    # feature for "who is more likely to make THIS shot".
+    return feats
