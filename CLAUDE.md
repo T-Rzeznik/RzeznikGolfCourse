@@ -1,6 +1,6 @@
 # RzeznikGolfCourse
 
-A stat tracker for a 6-hole backyard mini-golf course, played as a 1–3 player
+A stat tracker for a 6-hole backyard mini-golf course, played as a 1–4 player
 best-ball **scramble** with a sand wedge. The per-shot data is the foundation for
 the end goal: an LLM "stats caddie" that answers questions like *"who's more likely
 to make this shot?"* See **`CONTEXT.md`** for the domain model and the scramble

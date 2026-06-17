@@ -108,6 +108,46 @@ def test_bad_conditions_caught():
     assert any("Unknown wind" in p for p in problems), problems
 
 
+def _four_player_hole(rid="1"):
+    """A clean 4-player scramble on hole 1 (par 3): all four hit each stroke,
+    one best ball per stroke, the team holes on stroke 2."""
+    shots = pd.DataFrame([
+        shot(1, 1, 1, 1, 1, 1, "good", "tee", best=True),
+        shot(2, 1, 2, 1, 1, 2, "grounder", "tee"),
+        shot(3, 1, 3, 1, 1, 3, "short_pop", "tee"),
+        shot(4, 1, 4, 1, 1, 4, "good", "tee"),
+        shot(5, 1, 1, 1, 2, 1, "hole", "short", best=True),
+        shot(6, 1, 2, 1, 2, 2, "overshoot", "short"),
+        shot(7, 1, 3, 1, 2, 3, "overshoot", "short"),
+        shot(8, 1, 4, 1, 2, 4, "good", "short"),
+    ])
+    rounds = pd.DataFrame([{"round_id": 1, "date": "2026-06-13", "players": "1|2|3|4",
+                            "ground": "dry", "wind": "calm", "client_round_id": "cr-4p", "notes": ""}])
+    players = pd.DataFrame([{"player_id": i, "name": n, "hand": "R", "notes": ""}
+                            for i, n in [(1, "Tommy"), (2, "Matt"), (3, "Mia"), (4, "Kelsey")]])
+    return shots, rounds, players
+
+
+def test_four_player_round_is_clean():
+    """4-player scrambles are valid (ADR 0001 raised the cap from 3 to 4)."""
+    shots, rounds, players = _four_player_hole()
+    assert gdata.validate(shots=shots, rounds=rounds, players=players) == []
+
+
+def test_five_player_round_is_rejected():
+    """The bound is 1-4: a fifth player still trips the roster check."""
+    shots, rounds, players = _four_player_hole()
+    shots = pd.concat([shots, pd.DataFrame([
+        shot(9, 1, 5, 1, 1, 5, "good", "tee"),
+        shot(10, 1, 5, 1, 2, 5, "overshoot", "short"),
+    ])], ignore_index=True)
+    rounds = rounds.assign(players="1|2|3|4|5")
+    players = pd.concat([players, pd.DataFrame(
+        [{"player_id": 5, "name": "Sam", "hand": "R", "notes": ""}])], ignore_index=True)
+    problems = gdata.validate(shots=shots, rounds=rounds, players=players)
+    assert any("expected 1-4" in p for p in problems), problems
+
+
 # --- Derived scorecards ----------------------------------------------------
 def test_scorecards(monkeypatch, tmp_path):
     shots, rounds, players = valid_solo_round()
@@ -116,7 +156,7 @@ def test_scorecards(monkeypatch, tmp_path):
     assert hs.loc[hs["hole"] == 1, "team_strokes"].iloc[0] == 2   # holed on stroke 2
     assert hs.loc[hs["hole"] == 1, "to_par"].iloc[0] == -1        # par 3
     rs = gdata.round_scores()
-    assert bool(rs["won"].iloc[0]) is True                        # 2 < target 20
+    assert bool(rs["won"].iloc[0]) is True                        # 2 < target 19
 
 
 # --- Importer: validate-before-write + dedup -------------------------------
@@ -187,6 +227,51 @@ def test_importer_creates_new_players(monkeypatch, tmp_path):
 
     assert "Riley" in set(gdata.load_players()["name"])
     assert len(gdata.load_shots()) == 2
+
+
+def test_importer_resolves_players_by_name_not_round_local_id(monkeypatch, tmp_path):
+    """A round-local player_id must never be matched against the repo roster.
+
+    The logger numbers players 1..n positionally per round, so "player 2" is just
+    "whoever played second this round" — a different person each game. Resolving
+    that local id against the roster would attribute, e.g., Mia's shots to whoever
+    holds repo id 2 (Matt). Players are keyed by NAME; an unseen name is created.
+    """
+    import scripts.import_log as imp
+    _fresh_csvs(monkeypatch, tmp_path)
+    _two_players().to_csv(schema.PLAYERS_FILE, index=False)  # 1=Tommy, 2=Matt
+
+    # Local player_id 2 is *Mia*, not Matt — the collision the bug tripped on.
+    payload = {
+        "course": "Rzeznik Golf Course", "schema_version": schema.SCHEMA_VERSION,
+        "client_round_id": "mia-1", "date": "2026-05-06",
+        "players": [{"player_id": 1, "name": "Tommy"}, {"player_id": 2, "name": "Mia"}],
+        "shots": [
+            {"player_id": 1, "hole": 1, "stroke_num": 1, "shot_order": 1,
+             "outcome": "good", "distance": "tee", "best_ball": True, "ts": 1},
+            {"player_id": 2, "hole": 1, "stroke_num": 1, "shot_order": 2,
+             "outcome": "grounder", "distance": "tee", "best_ball": False, "ts": 1},
+            {"player_id": 1, "hole": 1, "stroke_num": 2, "shot_order": 1,
+             "outcome": "hole", "distance": "short", "best_ball": True, "ts": 2},
+            {"player_id": 2, "hole": 1, "stroke_num": 2, "shot_order": 2,
+             "outcome": "ob", "distance": "short", "best_ball": False, "ts": 2},
+        ],
+    }
+    pfile = tmp_path / "mia.json"
+    pfile.write_text(json.dumps(payload), encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", ["import_log.py", str(pfile)])
+    imp.main()
+
+    players = gdata.load_players()
+    name_to_id = dict(zip(players["name"], players["player_id"]))
+    assert "Mia" in name_to_id, "a never-seen name must be created, not collapsed onto id 2"
+    mia_id = name_to_id["Mia"]
+    assert mia_id != name_to_id["Matt"], "Mia must not be attributed to Matt"
+
+    # Mia's (second-player) shots land under HER id; Matt didn't touch this round.
+    shots = gdata.load_shots()
+    assert (shots["player_id"] == mia_id).sum() == 2
+    assert (shots["player_id"] == name_to_id["Matt"]).sum() == 0
 
 
 def test_interactive_logger_lands_a_clean_round(monkeypatch, tmp_path):

@@ -184,7 +184,7 @@ def test_score_series_is_ordered_by_date(monkeypatch, tmp_path):
     series = ov["score_series"]
     assert [p["date"] for p in series] == ["2026-05-01", "2026-05-02", "2026-05-03"]
     assert [p["team_total"] for p in series] == [2, 3, 4]
-    assert ov["target"] == 20            # the dashed target line for the chart
+    assert ov["target"] == 19            # the dashed target line for the chart
 
 
 # --- 9) overall chart series: shot-outcome mix -----------------------------

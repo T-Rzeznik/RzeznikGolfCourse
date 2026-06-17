@@ -38,6 +38,11 @@ def resolve_players(payload, players: pd.DataFrame):
 
     Returns (name_to_id, new_rows, candidate_players_df) so the caller can
     validate against the would-be roster before committing anything to disk.
+
+    Players are matched by NAME only. The payload's `player_id` is round-scoped
+    (the logger numbers players 1..n positionally per round), so it must never be
+    matched against the repo roster — doing so would attribute, say, "whoever
+    played second this round" to whatever repo player happens to hold id 2.
     """
     by_id = dict(zip(players["player_id"], players["name"]))
     by_name = {n.lower(): i for i, n in by_id.items()}
@@ -45,10 +50,8 @@ def resolve_players(payload, players: pd.DataFrame):
     next_id = (max(by_id) if len(by_id) else 0) + 1
 
     for p in payload["players"]:
-        pid, name = p.get("player_id"), p["name"]
-        if pid in by_id:
-            resolved[name] = pid
-        elif name.lower() in by_name:
+        name = p["name"]
+        if name.lower() in by_name:
             resolved[name] = by_name[name.lower()]
         else:
             resolved[name] = next_id

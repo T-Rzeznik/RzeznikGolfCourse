@@ -3,7 +3,7 @@
 **A homemade 6-hole backyard golf course — and a little experiment in turning a
 silly game into a data project.**
 
-We built a par-20 golf course in a backyard, made up some house rules, and play it
+We built a par-19 golf course in a backyard, made up some house rules, and play it
 as a *best-ball scramble*. This repo is everything around that: a phone-friendly
 app for logging rounds on the course, a clean data pipeline, and a set of machine
 learning models that try to predict how a round will go.
@@ -26,12 +26,12 @@ course** — the code doesn't care whose holes they are.
 
 ---
 
-## The course (par 20)
+## The course (par 19)
 
 | Hole | Par | Start | Target | Notes |
 |------|-----|-------|--------|-------|
 | 1 | 3 | Behind the pear tree | Behind the side pine | |
-| 2 | 3 | Where hole 1 ends | Behind the brush well | No line of sight |
+| 2 | 2 | Where hole 1 ends | Behind the brush well | No line of sight |
 | 3 | 3 | Back-left tree, by the pine | Behind the pear tree corner | No line of sight |
 | 4 | 4 | Top of the lawn by the sidewalk | Between back-left tree & porch tree | Hooks around house; **first shot lefty only** |
 | 5 | 3 | Where hole 4 ends | Back-right corner, 10 ft off the small pine | Safety routing |
@@ -51,7 +51,7 @@ course?** Just rewrite `course.yaml` and the matching `COURSE` block at the top 
 
 ## How we play (the house rules)
 
-It's a **best-ball scramble** for 1–3 players on one team:
+It's a **best-ball scramble** for 1–4 players on one team:
 
 - 🏌️ **One club only.** The sand wedge is the only legal club — so we don't bother
   tracking club choice.
@@ -61,7 +61,7 @@ It's a **best-ball scramble** for 1–3 players on one team:
 - 🎯 **What a shot can do:** *grounder, short pop, good, **hole**, overshoot,* or
   *out of bounds*. A `hole` ends the hole right away. Your **team score** for a
   hole is just the number of strokes it took.
-- 🏆 **You win** when the team total beats the **target** (the par total, 20). Set
+- 🏆 **You win** when the team total beats the **target** (the par total, 19). Set
   `target_score` in `course.yaml` to change it.
 - 🪃 **One mulligan per round** for the whole group — a free do-over of a single
   shot. The scrapped shot doesn't count.
