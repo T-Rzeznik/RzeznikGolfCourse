@@ -125,10 +125,10 @@
 // ---- Course (kept in sync with data/course.yaml) -------------------------
 const COURSE = {
   name: "Rzeznik Golf Course",
-  target: 20,
+  target: 19,
   holes: [
     {hole:1, par:3, start:"Behind the pear tree", target:"Behind the side pine", notes:""},
-    {hole:2, par:3, start:"Where hole 1 ends", target:"Behind the brush well", notes:"No line of sight."},
+    {hole:2, par:2, start:"Where hole 1 ends", target:"Behind the brush well", notes:"No line of sight."},
     {hole:3, par:3, start:"Back-left tree, by the pine", target:"Behind the pear tree corner", notes:"No line of sight."},
     {hole:4, par:4, start:"Top of the lawn by the sidewalk", target:"Between back-left tree & porch tree", notes:"Hooks around house. First shot LEFTY ONLY."},
     {hole:5, par:3, start:"Where hole 4 ends", target:"Back-right corner, 10 ft off small pine", notes:"Safety routing."},
@@ -222,7 +222,7 @@ function renderSetup() {
       <h2>New round</h2>
       <label>Date</label>
       <input type="date" id="d" value="${S.date}">
-      <label>Who's playing? (best-ball scramble, 1–3)</label>
+      <label>Who's playing? (best-ball scramble, 1–4)</label>
       <div id="players"></div>
       <div class="addrow">
         <input id="newp" placeholder="add a player by name">

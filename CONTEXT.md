@@ -6,7 +6,7 @@ machine-readable source of truth, this file is the prose one).
 
 ## What this is
 
-A stat tracker for a 6-hole backyard mini-golf course (par 20). It exists to build
+A stat tracker for a 6-hole backyard mini-golf course (par 19). It exists to build
 a clean per-shot dataset, which is the **brain** behind a future LLM "stats caddie"
 (the **mouth**) that answers natural-language questions like *"who's more likely to
 make this shot?"*. The split is deliberate: the data/stats layer computes facts; the
@@ -15,8 +15,8 @@ LLM only phrases them. Never let the mouth invent numbers the brain didn't produ
 ## House rules (baked into the data)
 
 - **Sand wedge is the only legal club** — so there is no club column.
-- Played as a **best-ball scramble**, 1–3 players on one team.
-- **Win** = team total strokes `<` the target score (default = par total, 20).
+- Played as a **best-ball scramble**, 1–4 players on one team.
+- **Win** = team total strokes `<` the target score (default = par total, 19).
 - **One mulligan** (free do-over) per round, for the whole group.
 - **Out-of-bounds (OB)** = stroke-and-distance retake (no drop); an OB ball can
   never be kept.

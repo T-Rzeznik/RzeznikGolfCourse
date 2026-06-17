@@ -209,8 +209,8 @@ def validate(
     for (rid, hole), grp in counting.groupby(["round_id", "hole"]):
         roster = rosters.get(int(rid), [])
         n_players = len(roster)
-        if not 1 <= n_players <= 3:
-            problems.append(f"Round {rid}: {n_players} players (expected 1-3)")
+        if not 1 <= n_players <= 4:
+            problems.append(f"Round {rid}: {n_players} players (expected 1-4)")
 
         strokes = sorted(int(x) for x in grp["stroke_num"].dropna().unique())
         max_s = max(strokes)

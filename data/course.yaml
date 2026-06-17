@@ -2,12 +2,12 @@ course:
   name: Rzeznik Golf Course
   location: Backyard / property
   holes_count: 6
-  par_total: 20
-  target_score: 20      # best-ball team total to "win" (default = par total)
+  par_total: 19
+  target_score: 19      # best-ball team total to "win" (default = par total)
 
 # Rules baked into the data:
 #   * Sand wedge is the only legal club.
-#   * Played as best ball, 1-3 players on one team; "win" = team total < target.
+#   * Played as best ball, 1-4 players on one team; "win" = team total < target.
 #   * One mulligan (free do-over) per round for the group.
 #   * Out-of-bounds = stroke-and-distance retake (no drop) for safety.
 #   * Pars are intentionally generous (e.g. par 3 where a perfect line is 2) so
@@ -28,7 +28,7 @@ holes:
     map: maps/hole_1.png
 
   - hole: 2
-    par: 3
+    par: 2
     yards: null
     start: Where hole 1 ends (behind the side pine)
     target: Behind the brush well
