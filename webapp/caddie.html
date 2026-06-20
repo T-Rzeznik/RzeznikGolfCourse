@@ -51,6 +51,15 @@
   .msg.me .bubble { background:linear-gradient(165deg,var(--green2),#245a27); border-color:var(--accent);
           color:#f3fbef; border-bottom-right-radius:5px; }
   .msg.err .bubble { border-color:#7a4a4a; background:#2a1c1c; color:#f0c0c0; }
+  /* rendered markdown inside a bot bubble */
+  .bubble.bot p { margin:0 0 7px; }
+  .bubble.bot p:last-child, .bubble.bot ul:last-child, .bubble.bot ol:last-child { margin-bottom:0; }
+  .bubble.bot .mdh { margin:9px 0 4px; font-weight:700; color:var(--gold); }
+  .bubble.bot ul, .bubble.bot ol { margin:4px 0 8px; padding-left:20px; }
+  .bubble.bot li { margin:2px 0; }
+  .bubble.bot strong { color:#f3fbef; font-weight:700; }
+  .bubble.bot code { background:#0c100b; border:1px solid var(--line); border-radius:5px;
+          padding:1px 5px; font-size:13.5px; font-family:ui-monospace,Menlo,Consolas,monospace; }
   .toolnote { margin:6px 2px 0; font-size:11.5px; color:var(--muted); letter-spacing:.2px;
           display:flex; align-items:center; gap:5px; }
   .toolnote b { color:var(--accent); font-weight:600; }
@@ -126,6 +135,42 @@ function saveChat(){ localStorage.setItem(CHAT_KEY, JSON.stringify(CHAT.filter(m
 function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function fmt(s){ return esc(s).replace(/\n/g, "<br>"); }
 
+// Minimal, safe Markdown -> HTML for the caddie's replies. The model emits
+// markdown (bold, bullet/numbered lists, the odd heading) which we want rendered,
+// not shown raw. We escape the text FIRST, then only ever introduce a fixed set
+// of tags, so nothing the model says can inject HTML.
+function inlineMd(s){            // s is already HTML-escaped
+  return s
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+    .replace(/(^|\s)_([^_\n]+)_(?=\s|$)/g, "$1<em>$2</em>");
+}
+function mdToHtml(src){
+  const lines = esc(src).split(/\r?\n/);
+  let html = "", list = null;    // open list type: 'ul' | 'ol' | null
+  const closeList = () => { if(list){ html += "</" + list + ">"; list = null; } };
+  for(const raw of lines){
+    const line = raw.replace(/\s+$/, "");
+    let m;
+    if((m = line.match(/^\s*[-*]\s+(.*)$/))){            // - bullet  or  * bullet
+      if(list !== "ul"){ closeList(); html += "<ul>"; list = "ul"; }
+      html += "<li>" + inlineMd(m[1]) + "</li>";
+    } else if((m = line.match(/^\s*\d+[.)]\s+(.*)$/))){  // 1. numbered
+      if(list !== "ol"){ closeList(); html += "<ol>"; list = "ol"; }
+      html += "<li>" + inlineMd(m[1]) + "</li>";
+    } else if((m = line.match(/^\s*#{1,6}\s+(.*)$/))){   // # heading
+      closeList(); html += '<p class="mdh">' + inlineMd(m[1]) + "</p>";
+    } else if(line.trim() === ""){
+      closeList();                                       // blank line ends a block
+    } else {
+      closeList(); html += "<p>" + inlineMd(line) + "</p>";
+    }
+  }
+  closeList();
+  return html;
+}
+
 const scroll = document.getElementById("chatScroll");
 const input = document.getElementById("chatText");
 const sendBtn = document.getElementById("chatSend");
@@ -161,7 +206,7 @@ function bubble(m){
     ? [...new Set(m.tool_calls.map(t=>t.name))].join(", ") : "";
   const note = names ? `<div class="toolnote">checked <b>${esc(names)}</b></div>` : "";
   return `<div class="msg ${m.error?'err':''}"><div class="avatar">⛳</div><div class="stack">
-    <div class="bubble bot">${fmt(m.text)}</div>${note}</div></div>`;
+    <div class="bubble bot">${mdToHtml(m.text)}</div>${note}</div></div>`;
 }
 
 async function sendChat(text){
