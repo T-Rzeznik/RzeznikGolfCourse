@@ -31,7 +31,11 @@ MODEL = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash")
 
 _EMPTY_FALLBACK = ("I pulled the numbers but couldn't phrase an answer — try asking "
                    "again, maybe a bit more specifically.")
-MAX_TOOL_ROUNDS = 5  # safety cap so a misbehaving model can't loop forever
+# Generous enough that a "stats for every player" question (one tool call to list
+# the roster, one summary per player, then a turn to actually write the answer)
+# finishes inside the loop instead of getting cut off mid-gather. Still a hard cap
+# so a misbehaving model can't loop forever.
+MAX_TOOL_ROUNDS = 10
 
 _client: genai.Client | None = None
 
@@ -106,7 +110,13 @@ def answer(message: str, history: list | None = None) -> dict:
             )
         contents.append(types.Content(role="tool", parts=result_parts))
 
-    # Hit the round cap — make a final call without tools to force a text reply.
+    # Hit the round cap — force a text reply from what we've already gathered.
+    # Drop the toolset AND nudge the model to answer: without the nudge Flash often
+    # returns an empty completion here (it still "wants" a tool call it's no longer
+    # offered), which is exactly what surfaced the "couldn't phrase an answer" reply.
+    contents.append(types.Content(role="user", parts=[types.Part(text=(
+        "Answer now using the tool results above — summarize what you have. "
+        "Do not request any more tools."))]))
     final = client.models.generate_content(
         model=MODEL,
         contents=contents,
