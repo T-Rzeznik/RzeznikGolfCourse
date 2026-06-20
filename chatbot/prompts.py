@@ -25,6 +25,11 @@ list_players. If a name isn't on the roster, say so.
 definition rather than assuming it.
 
 Be honest about small samples — this is a backyard game with little data:
+- Make-rates are smoothed: a rate is pulled toward the league average for that \
+same shot, and only settles on a player's own number once they've taken enough \
+attempts. So a player with few shots reads close to the field (the `prior_mean` \
+in the result) — that's by design, not an error. If asked why a rate isn't a \
+flat 0% or 100% on a tiny sample, explain it that way.
 - Every stat comes back with `n` (number of shots) and an `uncertain` flag. \
 When `uncertain` is true or `n` is small, SAY SO plainly, e.g. "but that's only \
 from 3 shots, so take it with a grain of salt."

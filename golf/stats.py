@@ -31,9 +31,16 @@ from . import schema
 # (skip, already excluded by features.shot_outcome). One place to tune.
 MAKE_OUTCOMES = {"good", "hole"}
 
-# Beta prior for smoothing. mean 0.5 / strength 2 == Laplace add-one.
+# Beta prior for smoothing. The prior MEAN a rate shrinks toward is the league
+# average *for the same kind of shot* (computed per slice in `_league_make_rate`),
+# so an inherently easy tap-in isn't dragged down by the global rate. The prior
+# STRENGTH is how many league-average "phantom" attempts every player carries
+# before their own shots outweigh the prior: a player needs roughly this many
+# real attempts to move halfway from the league average to their own rate. Bigger
+# strength => shot count matters more (this is the knob that makes volume count).
+# 0.5 is only the fallback mean when the field has no comparable attempts yet.
 DEFAULT_PRIOR_MEAN = 0.5
-DEFAULT_PRIOR_STRENGTH = 2.0
+DEFAULT_PRIOR_STRENGTH = 10.0
 
 # Below this many real attempts, flag the estimate as uncertain so the mouth hedges.
 UNCERTAIN_N = 5
@@ -80,6 +87,7 @@ def _smoothed(
         "makes": makes,
         "raw_rate": _round(makes / n) if n else None,
         "smoothed_rate": _round(post_mean),
+        "prior_mean": _round(prior_mean),  # the league rate this was shrunk toward
         "posterior_sd": _round(post_var ** 0.5),
         "uncertain": n < UNCERTAIN_N,
     }
@@ -112,6 +120,17 @@ def _id_to_name(pid: int) -> str:
     return str(match["name"].iloc[0]) if not match.empty else str(pid)
 
 
+def _slice(df: pd.DataFrame, distance: str | None = None, hole: int | None = None) -> pd.DataFrame:
+    """Narrow an attempts frame to one distance bucket and/or hole."""
+    if df.empty:
+        return df
+    if distance is not None:
+        df = df[df["distance"].astype("string") == distance]
+    if hole is not None:
+        df = df[df["hole"] == hole]
+    return df
+
+
 def _shots_for(player_id: int, distance: str | None = None, hole: int | None = None) -> pd.DataFrame:
     """Counting, real-attempt shots for a player, optionally filtered.
 
@@ -121,12 +140,26 @@ def _shots_for(player_id: int, distance: str | None = None, hole: int | None = N
     df = features.shot_outcome()
     if df.empty:
         return df
-    df = df[df["player_id"] == player_id]
-    if distance is not None:
-        df = df[df["distance"].astype("string") == distance]
-    if hole is not None:
-        df = df[df["hole"] == hole]
-    return df
+    return _slice(df[df["player_id"] == player_id], distance=distance, hole=hole)
+
+
+def _league_make_rate(distance: str | None = None, hole: int | None = None) -> float:
+    """The make-rate over *everyone's* attempts of this same kind.
+
+    This is the prior each per-player rate shrinks toward, so a player with few
+    shots is assumed to play this shot like the field does — not like a coin
+    flip, and not like the global average across all shot types. Sliced by the
+    same distance/hole as the player's rate so an easy tap-in stays easy: with
+    little data you read close to "how this shot plays for everyone", and only
+    earn your own number once your volume outweighs the prior. Falls back to
+    DEFAULT_PRIOR_MEAN when the field has no comparable attempts yet.
+    """
+    df = _slice(features.shot_outcome(), distance=distance, hole=hole)
+    n = int(len(df))
+    if not n:
+        return DEFAULT_PRIOR_MEAN
+    makes = int(df["outcome"].isin(MAKE_OUTCOMES).sum())
+    return makes / n
 
 
 def _validate_distance(distance: str | None) -> None:
@@ -146,17 +179,20 @@ def make_rate(player: str, distance: str | None = None, hole: int | None = None)
     """
     _validate_distance(distance)
     pid = _name_to_id(player)
-    df = _shots_for(pid, distance=distance, hole=None if hole is None else int(hole))
+    hole = None if hole is None else int(hole)
+    df = _shots_for(pid, distance=distance, hole=hole)
     n = int(len(df))
     makes = int(df["outcome"].isin(MAKE_OUTCOMES).sum()) if n else 0
     out = {
         "player": _id_to_name(pid),
         "player_id": pid,
         "distance": distance,
-        "hole": None if hole is None else int(hole),
+        "hole": hole,
         "make_definition": _MAKE_DEFINITION,
     }
-    out.update(_smoothed(makes, n))
+    # Shrink toward how the whole field plays this same shot, so thin samples
+    # read close to the league rate and only big samples earn their own number.
+    out.update(_smoothed(makes, n, prior_mean=_league_make_rate(distance, hole)))
     return out
 
 

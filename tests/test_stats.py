@@ -82,17 +82,29 @@ def test_smoothed_empty_is_prior():
 
 
 def test_smoothed_shrinks_one_for_one():
-    # Raw 1/1 = 100%, but Laplace add-one gives (1+1)/(1+2) = 0.667.
+    # Raw 1/1 = 100%, but the prior (mean .5, strength 10) pulls it to
+    # (1 + .5*10)/(1 + 10) = 6/11 = 0.545 — a lone make is barely above average.
     s = stats._smoothed(makes=1, n=1)
     assert s["raw_rate"] == 1.0
-    assert s["smoothed_rate"] == 0.667
+    assert s["smoothed_rate"] == 0.545
     assert s["uncertain"] is True
 
 
 def test_smoothed_converges_to_empirical():
-    s = stats._smoothed(makes=80, n=100)
+    # The stronger prior shrinks small samples hard, but with enough data the
+    # estimate still converges to the empirical rate.
+    s = stats._smoothed(makes=800, n=1000)
     assert abs(s["smoothed_rate"] - 0.8) < 0.01
     assert s["uncertain"] is False
+
+
+def test_smoothed_shrinks_toward_the_given_prior_mean():
+    # The prior mean isn't fixed at 0.5 — make_rate passes the league rate for
+    # the shot. A lone make on an easy shot (league .9) stays high, not pulled
+    # down to 50%: (1 + .9*10)/(1 + 10) = 10/11 = 0.909.
+    s = stats._smoothed(makes=1, n=1, prior_mean=0.9)
+    assert s["smoothed_rate"] == 0.909
+    assert s["prior_mean"] == 0.9
 
 
 # --- make definition & filters --------------------------------------------
@@ -137,6 +149,64 @@ def test_unknown_distance_raises(monkeypatch, tmp_path):
     _install(monkeypatch, tmp_path, shots, rounds)
     with pytest.raises(ValueError):
         stats.make_rate("Tommy", distance="banana")
+
+
+# --- weighting: shrink toward the league average for the same shot ---------
+def _flat(spec):
+    """Build (shots, rounds) from (pid, hole, distance, outcome) tuples.
+
+    Each tuple is one independent counting attempt. stats reads attempts via
+    features.shot_outcome(), which doesn't enforce the scramble invariant, so a
+    flat list of shots is enough to exercise the make-rate math directly.
+    """
+    rows, rounds, sid = [], [], 1
+    for i, (pid, hole, dist, oc) in enumerate(spec, start=1):
+        rows.append(shot(sid, i, pid, hole, 1, 1, oc, dist, best=(oc in ("good", "hole"))))
+        rounds.append(_round_row(i, str(pid)))
+        sid += 1
+    return pd.DataFrame(rows), pd.DataFrame(rounds)
+
+
+def test_thin_sample_shrinks_toward_league_not_half(monkeypatch, tmp_path):
+    # The field hits `short` easily (Sam 18/20). Tommy has a single short make.
+    # His rate should land near the league short-rate (~0.9), not the flat 0.5.
+    spec = [(2, 1, "short", "good")] * 18 + [(2, 1, "short", "ob")] * 2
+    spec += [(1, 1, "short", "good")]
+    _install(monkeypatch, tmp_path, *_flat(spec))
+    tommy = stats.make_rate("Tommy", distance="short")
+    assert tommy["n"] == 1
+    assert tommy["prior_mean"] == round(19 / 21, 3)   # league short = 19/21
+    assert tommy["smoothed_rate"] > 0.85              # pulled up toward the easy field
+
+
+def test_volume_outweighs_the_prior(monkeypatch, tmp_path):
+    # The field is weak from `short` (Sam 2/40) so the league prior is ~0.47,
+    # but Tommy is good there over a big sample (40/50). His volume should keep
+    # him near his own raw rate rather than dragging him down to the league.
+    spec = [(2, 1, "short", "good")] * 2 + [(2, 1, "short", "ob")] * 38
+    spec += [(1, 1, "short", "good")] * 40 + [(1, 1, "short", "ob")] * 10
+    _install(monkeypatch, tmp_path, *_flat(spec))
+    tommy = stats.make_rate("Tommy", distance="short")
+    assert tommy["n"] == 50
+    assert tommy["raw_rate"] == 0.8
+    assert tommy["prior_mean"] < 0.55                 # league is weak here
+    assert tommy["smoothed_rate"] > 0.72              # but volume keeps him high
+
+
+def test_prior_is_bucket_specific(monkeypatch, tmp_path):
+    # Same thin sample (1 make) in two buckets: the field makes tap-ins easily
+    # but misses tees often. Tommy's tap-in should read high and his tee low —
+    # proving the prior is the league rate for THAT bucket, not one global mean.
+    spec  = [(2, 1, "tap_in", "good")] * 9 + [(2, 1, "tap_in", "ob")] * 1
+    spec += [(2, 1, "tee", "good")] * 1 + [(2, 1, "tee", "ob")] * 9
+    spec += [(1, 1, "tap_in", "good"), (1, 1, "tee", "good")]
+    _install(monkeypatch, tmp_path, *_flat(spec))
+    tap = stats.make_rate("Tommy", distance="tap_in")
+    tee = stats.make_rate("Tommy", distance="tee")
+    assert tap["n"] == tee["n"] == 1
+    assert tap["smoothed_rate"] > 0.6                 # eased up by the easy field
+    assert tee["smoothed_rate"] < 0.4                 # held down by the hard field
+    assert tap["smoothed_rate"] - tee["smoothed_rate"] > 0.3
 
 
 # --- compare_players -------------------------------------------------------
