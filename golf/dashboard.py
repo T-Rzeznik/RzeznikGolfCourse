@@ -31,9 +31,10 @@ def _outcome_mix(shots) -> list[dict]:
 def payload() -> dict:
     """The whole dashboard as one JSON-serializable envelope.
 
-    The Overall tab uses `overall`; each Hole tab uses an entry in `holes`.
+    The Overall tab uses `overall`; each Hole tab uses an entry in `holes`; the
+    Players tab's dropdown picks an entry from `players`.
     """
-    return {"overall": overall(), "holes": holes()}
+    return {"overall": overall(), "holes": holes(), "players": players()}
 
 
 def holes() -> list[dict]:
@@ -111,6 +112,63 @@ def _players_row(hole: int | None = None) -> list[dict]:
             })
     rows.sort(key=lambda r: r["make_rate"], reverse=True)
     return rows
+
+
+def players() -> list[dict]:
+    """One block per player who has actually hit a shot — the Players tab.
+
+    Each block is everything the per-player view draws: an overall make-rate
+    headline, raw totals (shots / best balls / outcome counts), a make-rate
+    breakdown by distance and by hole, and the player's own shot-outcome mix.
+    Everything routes through the make-rate brain (stats.player_summary /
+    make_rate), so this tab can never disagree with the caddie or the other tabs.
+
+    Players with no real attempts yet (overall n == 0) are dropped — there's
+    nothing to chart, and showing them at the prior's 50% would mislead. Sorted
+    best overall make-rate first, so the dropdown opens on the sharpest shooter.
+    """
+    roster = gdata.load_players()
+    shots = gdata.load_shots()
+    hole_nums = sorted(int(m["hole"]) for m in gdata.load_course()["holes"])
+
+    out = []
+    for r in roster.itertuples(index=False):
+        name = str(r.name)
+        summary = stats.player_summary(name)
+        overall_rate = summary["overall"]
+        if overall_rate["n"] < 1:
+            continue
+
+        # Make-rate per hole, only for holes the player has actually hit on.
+        by_hole = []
+        for h in hole_nums:
+            rate = stats.make_rate(name, hole=h)
+            if rate["n"] >= 1:
+                by_hole.append({"hole": h, "make_rate": rate["smoothed_rate"], "n": rate["n"]})
+
+        pid = int(r.player_id)
+        mine = shots[shots["player_id"] == pid] if not shots.empty else shots
+        hand = str(r.hand)
+        out.append({
+            "player_id": pid,
+            "name": name,
+            "hand": "" if hand.lower() in ("", "nan") else hand,
+            "overall": {
+                "make_rate": overall_rate["smoothed_rate"],
+                "n": overall_rate["n"],
+                "uncertain": overall_rate["uncertain"],
+            },
+            "totals": summary["totals"],
+            "by_distance": [
+                {"distance": d["distance"], "make_rate": d["smoothed_rate"],
+                 "n": d["n"], "uncertain": d["uncertain"]}
+                for d in summary["by_distance"]
+            ],
+            "by_hole": by_hole,
+            "outcome_mix": _outcome_mix(mine),
+        })
+    out.sort(key=lambda p: p["overall"]["make_rate"], reverse=True)
+    return out
 
 
 def overall() -> dict:

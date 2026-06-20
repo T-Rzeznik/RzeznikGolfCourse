@@ -93,6 +93,17 @@
   .bar { height:6px; border-radius:3px; background:#2a3525; margin-top:5px; overflow:hidden; }
   .bar > span { display:block; height:100%; background:linear-gradient(90deg,var(--green3),var(--accent)); }
 
+  /* player picker (dropdown on the Players tab) */
+  .picker { display:flex; align-items:center; gap:11px; margin-bottom:14px; }
+  .picker label { font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.6px;
+          flex:0 0 auto; }
+  .picker select { flex:1; background:var(--card2); color:var(--txt); border:1px solid var(--line);
+          border-radius:12px; padding:13px 40px 13px 14px; font-size:16px; font-weight:700;
+          -webkit-appearance:none; appearance:none; cursor:pointer;
+          background-repeat:no-repeat; background-position:right 14px center; background-size:13px;
+          background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8'%3E%3Cpath fill='%237bd389' d='M1 1l5 5 5-5'/%3E%3C/svg%3E"); }
+  .picker select:focus { outline:none; border-color:var(--accent); }
+
   /* charts */
   .chartcard { background:var(--card); border:1px solid var(--line); border-radius:14px;
           padding:13px 14px 8px; margin-bottom:12px; }
@@ -125,7 +136,7 @@
 <script>
 const app = document.getElementById("app");
 const tabsEl = document.getElementById("tabs");
-let DATA = null, TAB = "overall";
+let DATA = null, TAB = "overall", PLAYER = null;
 
 function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function pct(x){ return x == null ? "—" : Math.round(x * 100) + "%"; }
@@ -148,7 +159,7 @@ async function load(){
 // Tab strip: Overall + one tab per hole. All data is already loaded, so
 // switching tabs just re-renders — no refetch.
 function renderTabs(){
-  const tabs = [{id:"overall", label:"Overall"}]
+  const tabs = [{id:"overall", label:"Overall"}, {id:"players", label:"Players"}]
     .concat(DATA.holes.map(h => ({id:"h" + h.hole, label:String(h.hole)})));
   tabsEl.innerHTML = tabs.map(t =>
     `<button class="tab ${t.id === TAB ? "on" : ""}" onclick="setTab('${t.id}')">${esc(t.label)}</button>`
@@ -159,6 +170,7 @@ function setTab(t){ TAB = t; renderTabs(); render(); window.scrollTo(0, 0); }
 function render(){
   if(!DATA) return;
   if(TAB === "overall") return renderOverall(DATA.overall);
+  if(TAB === "players") return renderPlayers();
   renderHole(DATA.holes.find(h => "h" + h.hole === TAB));
 }
 
@@ -221,6 +233,108 @@ function renderOverall(o){
 
   app.innerHTML = hero + `<h2>Overall</h2>` + cards + players + charts;
   drawCharts(o);
+}
+
+// Pretty labels for the distance buckets (schema keys -> human text).
+const DIST_LABELS = { tee:"Tee", long:"Long", mid:"Mid", short:"Short", tap_in:"Tap-in" };
+function distLabel(d){ return DIST_LABELS[d] || d; }
+function handLabel(h){ return h === "R" ? "right-handed" : h === "L" ? "left-handed" : h; }
+
+// The Players tab: a dropdown to pick a player, then that player's own stats.
+// All players are already in DATA, so switching is just a re-render (no refetch).
+function renderPlayers(){
+  const list = DATA.players || [];
+  if(!list.length){
+    app.innerHTML = `<div class="empty"><div class="flag">🏌️</div>
+      <h3>No player stats yet</h3>
+      <p>Import a round and each player's make-rates will show up here.</p></div>`;
+    return;
+  }
+  // Keep the selection valid (first load, or a player who's since dropped off).
+  if(!list.some(p => p.player_id === PLAYER)) PLAYER = list[0].player_id;
+  const p = list.find(x => x.player_id === PLAYER);
+
+  const opts = list.map(x =>
+    `<option value="${x.player_id}"${x.player_id === PLAYER ? " selected" : ""}>` +
+    `${esc(x.name)} · ${pct(x.overall.make_rate)}</option>`).join("");
+  const picker = `<div class="picker"><label for="psel">Player</label>
+    <select id="psel" onchange="setPlayer(this.value)">${opts}</select></div>`;
+
+  // Overall make-rate hero.
+  const unc = p.overall.uncertain ? ` <span class="tag no">small sample</span>` : "";
+  const hand = p.hand ? ` · ${esc(handLabel(p.hand))}` : "";
+  const hero = `<div class="hero">
+      <div class="lbl">Overall make-rate</div>
+      <div class="big">${pct(p.overall.make_rate)}<small> · ${p.overall.n} shots</small></div>
+      <div class="meta">${esc(p.name)}${hand}${unc}</div>
+    </div>`;
+
+  // Raw totals.
+  const t = p.totals, oc = t.outcomes || {};
+  const cards = `<div class="grid">
+      <div class="stat"><div class="k">Total shots</div><div class="v">${t.total_shots}</div>
+        <div class="n">counting attempts</div></div>
+      <div class="stat"><div class="k">Best balls kept</div><div class="v">${t.total_best_balls}</div>
+        <div class="n">team used their ball</div></div>
+      <div class="stat"><div class="k">Holes made</div><div class="v">${oc.hole || 0}</div>
+        <div class="n">walk-off putts</div></div>
+      <div class="stat"><div class="k">Out of bounds</div><div class="v">${oc.ob || 0}</div>
+        <div class="n">OB shots</div></div>
+    </div>`;
+
+  const dist = playerDistanceBlock(p.by_distance);
+
+  const NO = "Not enough data yet — log a few rounds.";
+  const charts = `<h2>Trends</h2>`
+    + (p.by_distance.length ? card("cPDist", "Make-rate by distance") : nodata("Make-rate by distance", NO))
+    + (p.by_hole.length     ? card("cPHole", "Make-rate by hole")     : nodata("Make-rate by hole", NO))
+    + (p.outcome_mix.length ? card("cPMix",  "Shot-outcome mix")      : nodata("Shot-outcome mix", NO));
+
+  app.innerHTML = picker + hero + `<h2>${esc(p.name)}</h2>` + cards + dist + charts;
+  drawPlayerCharts(p);
+}
+// Changing the dropdown re-renders just the body (the tab strip stays put), so
+// don't scroll to top the way a tab switch does.
+function setPlayer(id){ PLAYER = Number(id); render(); }
+
+// Make-rate-by-distance list, same bar styling as the per-player rows elsewhere.
+function playerDistanceBlock(byDist){
+  if(!byDist || !byDist.length) return "";
+  const top = Math.max(...byDist.map(d => d.make_rate), 0.01);
+  return `<h2>By distance</h2><div class="players">` + byDist.map(d => `
+      <div class="pchip"><span class="name">${esc(distLabel(d.distance))}</span>
+        <span class="rate">${pct(d.make_rate)}<small>${d.n} shots</small></span></div>
+      <div class="bar"><span style="width:${Math.round(d.make_rate / top * 100)}%"></span></div>`
+  ).join("") + `</div>`;
+}
+
+function drawPlayerCharts(p){
+  if(typeof Chart === "undefined") return;
+  themeCharts(); clearCharts();
+  const at = id => document.getElementById(id);
+
+  if(at("cPDist")){
+    new Chart(at("cPDist"), { type:"bar",
+      data:{ labels:p.by_distance.map(d=>distLabel(d.distance)), datasets:[{ label:"Make-rate %",
+        data:p.by_distance.map(d=>Math.round(d.make_rate*100)), borderRadius:6,
+        backgroundColor:"rgba(67,160,71,.85)" }]},
+      options: axes("%", 100) });
+  }
+  if(at("cPHole")){
+    const bh = [...p.by_hole].sort((a,b)=>a.hole-b.hole);
+    new Chart(at("cPHole"), { type:"bar",
+      data:{ labels:bh.map(h=>"H"+h.hole), datasets:[{ label:"Make-rate %",
+        data:bh.map(h=>Math.round(h.make_rate*100)), borderRadius:6,
+        backgroundColor:"rgba(123,211,137,.85)" }]},
+      options: axes("%", 100) });
+  }
+  if(at("cPMix")){
+    new Chart(at("cPMix"), { type:"doughnut",
+      data:{ labels:p.outcome_mix.map(m=>m.outcome), datasets:[{ data:p.outcome_mix.map(m=>m.count),
+        backgroundColor:p.outcome_mix.map(m=>OUTCOME_COLORS[m.outcome]||"#9bb08c"),
+        borderColor:"#161d16", borderWidth:2 }]},
+      options:{ responsive:true, maintainAspectRatio:false, plugins:{ legend:{ position:"right" } } } });
+  }
 }
 
 function renderHole(h){

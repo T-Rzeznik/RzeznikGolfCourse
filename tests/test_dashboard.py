@@ -286,7 +286,51 @@ def test_payload_includes_overall_and_six_holes(monkeypatch, tmp_path):
     p = dashboard.payload()
     assert "overall" in p
     assert [h["hole"] for h in p["holes"]] == [1, 2, 3, 4, 5, 6]
+    assert "players" in p
     json.dumps(p)   # whole envelope is serializable
+
+
+# --- 12) Players tab: per-player blocks share the make-rate brain ----------
+def test_players_block_matches_brain_and_orders_best_first(monkeypatch, tmp_path):
+    install(monkeypatch, tmp_path, [
+        two_player_round(1, "2026-05-01"),
+        two_player_round(2, "2026-05-02"),
+    ])
+    from golf import stats
+    blocks = {p["name"]: p for p in dashboard.players()}
+    assert set(blocks) == {"Tommy", "Matt"}
+    for name in ("Tommy", "Matt"):
+        brain = stats.make_rate(name)
+        assert blocks[name]["overall"]["make_rate"] == brain["smoothed_rate"]
+        assert blocks[name]["overall"]["n"] == brain["n"]
+    # Tommy (all makes) sorts ahead of Matt (none) so the dropdown opens on him.
+    order = [p["name"] for p in dashboard.players()]
+    assert order.index("Tommy") < order.index("Matt")
+
+
+def test_players_block_has_breakdowns_and_hand(monkeypatch, tmp_path):
+    install(monkeypatch, tmp_path, [two_player_round(1, "2026-05-01")])   # hole 1, tee+short
+    tommy = next(p for p in dashboard.players() if p["name"] == "Tommy")
+    # by_hole only lists holes actually played (just hole 1 here).
+    assert [b["hole"] for b in tommy["by_hole"]] == [1]
+    # by_distance only lists buckets the player shot from (tee then short).
+    assert {b["distance"] for b in tommy["by_distance"]} == {"tee", "short"}
+    # Tommy went good->hole, so his own mix is one good + one hole.
+    assert {m["outcome"]: m["count"] for m in tommy["outcome_mix"]} == {"good": 1, "hole": 1}
+    assert tommy["hand"] == "R"
+
+
+def test_players_block_drops_players_with_no_shots(monkeypatch, tmp_path):
+    # Only player 1 hits; player 2 is on the roster but never took a shot.
+    install(monkeypatch, tmp_path, [solo_round(1, "2026-05-01", 3, pid=1)])
+    names = [p["name"] for p in dashboard.players()]
+    assert names == ["Tommy"]
+
+
+def test_players_block_empty_data_is_safe(monkeypatch, tmp_path):
+    install(monkeypatch, tmp_path, [])
+    assert dashboard.players() == []
+    json.dumps(dashboard.payload())
 
 
 # --- 7) the /api/stats endpoint (integration smoke) ------------------------
