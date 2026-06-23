@@ -110,6 +110,68 @@
   .addrow { display:flex; gap:8px; margin-top:4px; }
   .addrow input { flex:1; }
   .warnrow { font-size:13px; color:var(--gold); padding:2px; }
+
+  /* ---- Finish: result + scorecard ---- */
+  .finresult { display:flex; align-items:center; justify-content:space-between; gap:10px;
+          margin:2px 0 14px; flex-wrap:wrap; }
+  .fintotal { display:flex; align-items:baseline; gap:9px; }
+  .fintotal .v { font-size:42px; font-weight:800; color:#fff; line-height:1;
+          font-variant-numeric:tabular-nums; }
+  .fintotal .k { font-size:13px; color:var(--muted); }
+  .sc { display:grid; grid-template-columns:auto repeat(6,1fr) auto; gap:5px; }
+  .sc .cell { text-align:center; padding:8px 0; border-radius:9px; font-size:15px;
+          font-variant-numeric:tabular-nums; }
+  .sc .rh { text-align:left; color:var(--muted); font-size:11px; letter-spacing:1px;
+          text-transform:uppercase; align-self:center; padding-left:2px; }
+  .sc .hd { color:var(--muted); font-size:13px; font-weight:700; }
+  .sc .tot { font-weight:800; }
+  .sc .col-tot { background:#10160f; }
+  .sc .par { color:var(--gold); background:rgba(232,201,140,.10); }
+  .sc .s-under { color:var(--accent); background:rgba(123,211,137,.14);
+          box-shadow:inset 0 0 0 1.5px rgba(123,211,137,.55); }
+  .sc .s-over { color:#e8a18c; background:rgba(232,161,140,.14); }
+  .sc .s-even { color:var(--txt); background:#222a20; }
+
+  /* ---- Finish: per-player tabs ---- */
+  .tabs { display:flex; gap:6px; overflow-x:auto; margin:0 0 14px; padding-bottom:2px; }
+  .tab { flex:0 0 auto; padding:8px 15px; border-radius:999px; border:1px solid var(--line);
+          background:#1d261c; color:var(--muted); font-size:14px; font-weight:600; cursor:pointer; }
+  .tab.on { background:var(--green2); border-color:var(--accent); color:#fff; }
+  .stats3 { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:0 0 14px; }
+  .stat { background:#1b231a; border:1px solid var(--line); border-radius:12px;
+          padding:11px 8px; text-align:center; }
+  .stat .v { font-size:25px; font-weight:800; color:#fff; line-height:1;
+          font-variant-numeric:tabular-nums; }
+  .stat .k { font-size:11px; letter-spacing:1px; text-transform:uppercase; color:var(--muted);
+          margin-top:6px; }
+  .rawbox { margin-top:4px; }
+  .rawbox summary { cursor:pointer; color:var(--muted); font-size:13px; padding:8px 0;
+          list-style:none; }
+  .rawbox summary::-webkit-details-marker { display:none; }
+  .rawbox summary::before { content:"▸ "; color:var(--accent); }
+  .rawbox[open] summary::before { content:"▾ "; }
+
+  /* ---- Finish: per-player shot-mix bars ---- */
+  .mixrow { display:flex; align-items:center; gap:10px; margin-bottom:7px; }
+  .mixlbl { flex:0 0 84px; font-size:13px; color:var(--txt); }
+  .mixbar { flex:1; height:9px; border-radius:5px; background:#222a20; overflow:hidden; }
+  .mixbar span { display:block; height:100%; background:var(--green3); border-radius:5px; }
+  .mixval { flex:0 0 auto; min-width:56px; text-align:right; font-size:12px; color:var(--muted);
+          font-variant-numeric:tabular-nums; }
+
+  /* ---- Finish: player comparison (Standouts) ---- */
+  .sharebar { display:flex; height:14px; border-radius:7px; overflow:hidden;
+          background:#222a20; border:1px solid var(--line); }
+  .sharebar span { display:block; height:100%; }
+  .sharekey { display:flex; flex-wrap:wrap; gap:12px; margin:9px 0 2px; font-size:13px; }
+  .keyitem { display:inline-flex; align-items:center; }
+  .kdot { width:10px; height:10px; border-radius:50%; margin-right:6px; flex:0 0 auto; }
+  .awards { display:flex; flex-direction:column; gap:6px; margin-top:12px; }
+  .award { display:flex; justify-content:space-between; align-items:center; gap:10px;
+          padding:9px 11px; border-radius:10px; background:#1b231a; border:1px solid var(--line); }
+  .alabel { font-size:13px; color:var(--muted); }
+  .aname { font-size:14px; font-weight:700; color:var(--txt); }
+  .aval { color:var(--accent); font-weight:600; margin-left:7px; }
 </style>
 </head>
 <body>
@@ -147,6 +209,10 @@ const OUTCOMES = [
 ];
 const LABEL = Object.fromEntries(OUTCOMES.map(o => [o.k, o.label]));
 LABEL.skip = "Skipped";   // a player who sat out this stroke (not a real attempt)
+// Best->worst, for the per-player shot-mix breakdown on the finish screen.
+const OUTCOME_ORDER = ["hole","good","short_pop","grounder","overshoot","ob","skip"];
+// Per-player accent colors for the finish-screen comparison (by seat in `active`).
+const PLAYER_TINTS = ["#7bd389","#e8c98c","#8cc7e8","#e8a18c"];
 // Distance to the target from the shared spot the whole stroke shoots from.
 // Stroke 1 is auto "tee"; later strokes pick one of these. `k` matches schema.DISTANCES.
 const DISTANCES = [
@@ -181,6 +247,7 @@ function uuid(){ return (crypto.randomUUID ? crypto.randomUUID()
 
 // ---- State ---------------------------------------------------------------
 let S = load() || newRound();
+let finTab = null;   // which player's tab is open on the finish screen
 function newRound() {
   // Local date (not UTC) so a round logged near midnight gets the right day.
   const n = new Date();
@@ -319,6 +386,16 @@ function logOutcome(k){
   }
   S.strokeOutcomes[pid] = k;
   S.turnIdx++;
+  if(k==="hole"){
+    // Scramble: the hole is won the instant someone holes out, so the rest of
+    // the team never hits. Mark anyone who hadn't shot yet as skipped — that
+    // keeps the invariant (one counting shot per active player per stroke) while
+    // a skip can never be the best ball — then resolve straight to the next hole.
+    for(let i=S.turnIdx;i<S.order.length;i++) S.strokeOutcomes[S.order[i]]="skip";
+    S.turnIdx = S.order.length;
+    resolveStroke();
+    return;
+  }
   if(S.turnIdx < S.order.length){ render(); return; }
   resolveStroke();
 }
@@ -472,25 +549,128 @@ function renderPlay(){
 function toggleMull(){ if(S.mulliganUsed&&!S.pendMull) return; S.pendMull=!S.pendMull; render(); }
 function editDistance(){ S.phase="distance"; render(); }   // re-pick this stroke's distance
 
+// --- Finish screen --------------------------------------------------------
+function scorecardHTML(){
+  const hd=[`<div class="cell rh"></div>`];
+  const pr=[`<div class="cell rh">Par</div>`];
+  const sc=[`<div class="cell rh">Score</div>`];
+  for(const h of COURSE.holes){
+    const strokes = holeStrokes(h.hole);
+    const d = strokes - h.par;
+    const cls = strokes===0 ? 's-even' : d<0 ? 's-under' : d>0 ? 's-over' : 's-even';
+    hd.push(`<div class="cell hd">${h.hole}</div>`);
+    pr.push(`<div class="cell par">${h.par}</div>`);
+    sc.push(`<div class="cell ${cls}">${strokes||'–'}</div>`);
+  }
+  const tt = teamTotal(), tp = tt - COURSE.target;
+  const tcls = tp<0 ? 's-under' : tp>0 ? 's-over' : 's-even';
+  hd.push(`<div class="cell hd tot col-tot">Tot</div>`);
+  pr.push(`<div class="cell par tot col-tot">${COURSE.target}</div>`);
+  sc.push(`<div class="cell ${tcls} tot col-tot">${tt}</div>`);
+  return `<div class="sc">${hd.join("")}${pr.join("")}${sc.join("")}</div>`;
+}
+function playerSummary(pid){
+  const mine = realShots().filter(x=>x.player_id===pid);
+  const mix = {};
+  mine.forEach(x=>{ mix[x.outcome] = (mix[x.outcome]||0) + 1; });
+  return { shots:mine.length, best:mine.filter(x=>x.best_ball).length,
+           holed:mine.filter(x=>x.outcome==='hole').length, mix };
+}
+function pct(n, d){ return d ? Math.round(n / d * 100) : 0; }
+function tint(pid){ return PLAYER_TINTS[S.active.indexOf(pid) % PLAYER_TINTS.length]; }
+function goodPlus(s){ return (s.mix.good||0) + (s.mix.hole||0); }
+function finishPlayerCard(){
+  const s = playerSummary(finTab);
+  const rows = OUTCOME_ORDER.filter(k=>s.mix[k]).map(k=>{
+    const n = s.mix[k], p = pct(n, s.shots);
+    return `<div class="mixrow">
+        <span class="mixlbl">${LABEL[k]}</span>
+        <div class="mixbar"><span style="width:${p}%"></span></div>
+        <span class="mixval">${n} · ${p}%</span></div>`;
+  }).join("") || `<div class="muted">No shots this round.</div>`;
+  return `
+    <div class="stats3">
+      <div class="stat"><div class="v">${s.shots}</div><div class="k">Shots</div></div>
+      <div class="stat"><div class="v">${s.best}</div><div class="k">Best balls</div></div>
+      <div class="stat"><div class="v">${pct(goodPlus(s), s.shots)}%</div><div class="k">Good or better</div></div>
+    </div>
+    <div class="muted" style="margin-bottom:8px">Shot mix · share of ${nm(finTab)}'s shots</div>
+    ${rows}`;
+}
+// Player-vs-player comparison. Empty (skipped) for a solo round — nothing to compare.
+function standoutsHTML(){
+  const ids = S.active;
+  if(ids.length < 2) return "";
+  const per = {}; let totalBest = 0;
+  ids.forEach(pid => { per[pid] = playerSummary(pid); totalBest += per[pid].best; });
+  const seg = ids.map(pid =>
+    `<span style="width:${pct(per[pid].best, totalBest)}%;background:${tint(pid)}"></span>`
+  ).join("");
+  const key = ids.map(pid =>
+    `<span class="keyitem"><span class="kdot" style="background:${tint(pid)}"></span>${nm(pid)} ${pct(per[pid].best, totalBest)}%</span>`
+  ).join("");
+  // "Most X" awards — only shown when someone actually leads (top count > 0).
+  const award = (label, metric, fmt) => {
+    let top = null;
+    ids.forEach(pid => { const v = metric(per[pid]); if(top===null || v>top.v) top = {pid, v}; });
+    if(!top || top.v <= 0) return "";
+    return `<div class="award"><span class="alabel">${label}</span>
+        <span class="aname">${nm(top.pid)}<span class="aval">${fmt(top.v)}</span></span></div>`;
+  };
+  const awards = [
+    award("Most holes sunk", p => p.holed, v => `${v}`),
+    award("Sharpest", p => pct(goodPlus(p), p.shots), v => `${v}% good+`),
+    award("Most short pops", p => p.mix.short_pop||0, v => `${v}`),
+    award("Most grounders", p => p.mix.grounder||0, v => `${v}`),
+    award("Most overshoots", p => p.mix.overshoot||0, v => `${v}`),
+    award("Most out-of-bounds", p => p.mix.ob||0, v => `${v}`),
+  ].filter(Boolean).join("");
+  return `
+    <div class="card">
+      <h2>Standouts</h2>
+      <div class="muted" style="margin-bottom:7px">Best-ball share</div>
+      <div class="sharebar">${seg}</div>
+      <div class="sharekey">${key}</div>
+      <div class="awards">${awards}</div>
+    </div>`;
+}
+function selectFinTab(pid){ finTab = pid; render(); }
 function renderFinish(){
+  if(!S.active.includes(finTab)) finTab = S.active[0];
   const payload = JSON.stringify(exportData(), null, 0);
-  const contrib = S.active.map(pid=>{
-    const mine = realShots().filter(x=>x.player_id===pid);
-    const best = mine.filter(x=>x.best_ball).length;
-    return `${nm(pid)}: ${mine.length} shots, ${best} best balls`;
-  }).join(" · ");
-  const t = teamTotal();
+  const tt = teamTotal(), diff = tt - COURSE.target;
+  const verline = diff<0 ? `🏆 Win — ${-diff} under target`
+                : diff===0 ? `Even with target — no win`
+                : `No win — ${diff} over target`;
+  const vcls = diff<0 ? 'under' : diff>0 ? 'over' : 'even';
+  const tabs = S.active.map(pid =>
+    `<button class="tab ${pid===finTab?'on':''}" onclick="selectFinTab(${pid})">${nm(pid)}</button>`
+  ).join("");
   app.innerHTML = `
     <div class="card">
-      <h2>Round complete</h2>
-      <div class="holeinfo">Team total: <b>${t}</b> vs target ${COURSE.target}
-        — ${t<COURSE.target?'🏆 WIN':'no win'}.<br>${contrib}</div>
+      <h2>Round complete · ${S.date}</h2>
+      <div class="finresult">
+        <div class="fintotal"><span class="v">${tt}</span><span class="k">strokes · target ${COURSE.target}</span></div>
+        <span class="vspar ${vcls}">${verline}</span>
+      </div>
+      ${scorecardHTML()}
+    </div>
+    ${standoutsHTML()}
+    <div class="card">
+      <h2>By player</h2>
+      <div class="tabs">${tabs}</div>
+      ${finishPlayerCard()}
+    </div>
+    <div class="card">
       <button class="btn primary wide" id="sendBtn" onclick="autoSendIt()">✅ Send round</button>
       <div id="sendStatus" class="holeinfo" style="display:none"></div>
-      <button class="btn wide" onclick="copyIt()">📋 Copy round data (fallback)</button>
-      <label>Round data (import with scripts/import_log.py)</label>
-      <textarea id="payload" readonly>${payload}</textarea>
-      <button class="btn sm wide" onclick="if(confirm('Clear this round and start fresh?')){localStorage.removeItem(KEY);S=newRound();render();}">🗑 Clear & new round</button>
+      <button class="btn wide" onclick="copyIt()">📋 Copy round data</button>
+      <details class="rawbox">
+        <summary>Raw round data (import with scripts/import_log.py)</summary>
+        <textarea id="payload" readonly>${payload}</textarea>
+      </details>
+      <button class="btn sm wide" style="opacity:.6;margin-top:4px"
+        onclick="if(confirm('Clear this round and start fresh?')){localStorage.removeItem(KEY);S=newRound();render();}">🗑 Clear &amp; new round</button>
     </div>`;
 }
 function exportData(){
